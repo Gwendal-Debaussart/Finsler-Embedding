@@ -1,5 +1,3 @@
-the code to
-
 # Finsler Embedding
 
 # Installation
