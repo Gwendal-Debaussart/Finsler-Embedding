@@ -315,3 +315,171 @@ def learn_alpha(
         losses.append(loss.item())
         pbar.set_postfix(loss=loss.item())
     return losses
+
+
+def local_poly_gradient(
+    x: torch.Tensor, X: torch.Tensor, f0: torch.Tensor, F: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Batched local quadratic polynomial reconstruction. We assume that the local polynomial is of the form
+    f(x + dx) = f(x) + a^T dx + 1/2 dx^T H dx,
+    where a is the gradient and H is the Hessian.
+    We want to solve for a and H given the values of f at the center point x and its neighbors X.
+    We use least-squares to solve for the coefficients of the polynomial, and then extract the gradient from the coefficients.
+
+    Parameters
+    ----------
+    x : torch.Tensor (B, D)
+        Center points.
+    X : torch.Tensor (B, M, D)
+        Neighbor points for each center.
+    f0 : torch.Tensor (B, N)
+        Values of N functions at each center.
+    F : torch.Tensor (B, M, N)
+        Values of N functions at each neighbor.
+
+    Returns
+    -------
+    grad : torch.Tensor (B, N, D)
+        grad[b, k, d] = ∂f_k / ∂x_d at center b.
+    hess : torch.Tensor (B, N, D, D)
+        hess[b, k, d1, d2] = ∂²f_k / ∂x_d1 ∂x_d2 at center b.
+    """
+
+    B, M, D = X.shape
+
+    assert x.shape == (B, D)
+    assert f0.ndim == 2
+    assert F.shape == (B, M, f0.shape[1])
+
+    # Shift coordinates
+    dx = X - x[:, None, :]  # (B, M, D)
+
+    ij = torch.triu_indices(
+        D,
+        D,
+        device=X.device,
+    )
+    quadratic = dx[:, :, ij[0]] * dx[:, :, ij[1]]  # x^i x^j
+
+    # For diagonal terms: 1/2 H_jj dx_j²
+    # For off-diagonal terms: H_jk dx_j dx_k
+    diagonal = ij[0] == ij[1]
+    quadratic = torch.where(
+        diagonal[None, None, :],
+        0.5 * quadratic,
+        quadratic,
+    )
+
+    # Design matrix
+    A = torch.cat(
+        [dx, quadratic],
+        dim=-1,
+    )  # (B, M, D + D(D+1)/2)
+
+    rhs = F - f0[:, None, :]  # (B, M, N)
+
+    sol = torch.linalg.lstsq(A, rhs).solution
+    grad = sol[:, :D, :].transpose(1, 2)  # (B, N, D)
+    hess = torch.zeros(B, f0.shape[1], D, D, device=X.device, dtype=X.dtype)
+    hess[:, :, ij[0], ij[1]] = sol[:, D:, :].transpose(1, 2)
+    hess[:, :, ij[1], ij[0]] = hess[:, :, ij[0], ij[1]]  # Symmetrize the Hess
+
+    return grad, hess
+
+
+def reconstruction_loss(
+    X_i: torch.Tensor,
+    phi_i: torch.Tensor,
+    lambda_k: torch.Tensor,
+    grad_phi_i: torch.Tensor,
+    randers: RandersMetrics,
+    mu0: float,
+    mu1: float,
+) -> torch.Tensor:
+    """
+    Computes the reconstruction loss from the paper.
+
+    Parameters:
+    ----------
+    X_i : torch.Tensor (B, M)
+        The input points for which we want to compute the loss.
+    phi_i : torch.Tensor (B, K)
+        The eigenvectors for the input points.
+    lambda_k : torch.Tensor (K,)
+        The eigenvalues for the eigenvectors.
+    grad_phi_i : torch.Tensor (B, K, M)
+        The gradient of the eigenvectors with respect to the input points.
+        grad_phi_i[b, k, d] = ∂phi_k / ∂x_d at point X_i[b].
+    randers : RandersMetrics
+        The Randers metric object.
+    mu0 : float
+        The first moment of the kernel.
+    mu1 : float
+        The second moment of the kernel.
+    """
+    # Randers related quantities
+    b_i = randers.beta * randers.omega(X_i)  # (B, M)
+    b_i = b_i[:, None, :].repeat(1, grad_phi_i.shape[1], 1)  # (B, K, M)
+    b_i_norm_sqr = torch.norm(b_i, dim=-1) ** 2
+    grad_b_i_norm_sqr = torch.autograd.grad(b_i_norm_sqr.sum(), X_i, create_graph=True)[0]
+    m = b_i.shape[0]
+    const = mu1 / mu0 * (m + 1) / m
+
+    denom = 1 - b_i_norm_sqr  # (B, K)
+    fst_term = const * b_i / denom[:, :, None]  # (B, K, M)
+
+    lhs = (
+        (m + 1) / 2 * phi_i[:, :, None] * grad_b_i_norm_sqr[:, None, :] / denom[:, :, None]
+    )  # (B, K, M)
+    lhs -= grad_phi_i
+
+    reco = -torch.einsum("bkd,bkd->bk", lhs, fst_term)
+
+    loss = lambda_k[None, :] * phi_i - reco
+    loss = loss.pow(2).mean()
+    return loss
+
+
+@torch.no_grad()
+def build_grad_phi(
+    X: torch.Tensor, valid_edges: torch.Tensor, eig_vecs: torch.Tensor
+) -> torch.Tensor:
+    """
+    Computes the gradient of the eigenvectors with respect to the input points X using local polynomial reconstruction.
+    We have that grad_phi[i,k,d] = ∂phi_k / ∂x_d at point i.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points.
+    valid_edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    eig_vecs : torch.Tensor (N, K)
+        The eigenvectors of the graph Laplacian.
+
+    Returns:
+    -------
+    grad_phi : torch.Tensor (N, K, D)
+        The gradient of the eigenvectors with respect to the input points X.
+    """
+    N, D = X.shape
+    K = eig_vecs.shape[1]
+    # Build the operateur \nabla phi
+    grad_phi = torch.zeros(N, K, X.shape[1], device=X.device, dtype=X.dtype)
+    for i in tqdm(range(N)):
+        # Cant't really batch it because not always the same
+        # number of neighbors for each point. So we have to do it one by one.
+        x_i = X[i]
+        neighbors = valid_edges[valid_edges[:, 0] == i][:, 1]
+        x_i_neighbors = X[neighbors]
+        f0 = eig_vecs[i, :]
+        F = eig_vecs[neighbors, :]
+        grad_phi_i_, hess_phi_i_ = local_poly_gradient(
+            x=x_i.unsqueeze(0),
+            X=x_i_neighbors.unsqueeze(0),
+            f0=f0.unsqueeze(0),
+            F=F.unsqueeze(0),
+        )  # (1, N, D), (1, N, D, D)
+        grad_phi[i, :, :] = grad_phi_i_[0]
+    return grad_phi
