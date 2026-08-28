@@ -378,10 +378,11 @@ def local_poly_gradient(
     )  # (B, M, D + D(D+1)/2)
 
     rhs = F - f0[:, None, :]  # (B, M, N)
-
+    if rhs.is_complex():
+            A = A.to(rhs.dtype)
     sol = torch.linalg.lstsq(A, rhs).solution
     grad = sol[:, :D, :].transpose(1, 2)  # (B, N, D)
-    hess = torch.zeros(B, f0.shape[1], D, D, device=X.device, dtype=X.dtype)
+    hess = torch.zeros(B, f0.shape[1], D, D, device=X.device, dtype=rhs.dtype)
     hess[:, :, ij[0], ij[1]] = sol[:, D:, :].transpose(1, 2)
     hess[:, :, ij[1], ij[0]] = hess[:, :, ij[0], ij[1]]  # Symmetrize the Hess
 
@@ -429,15 +430,19 @@ def reconstruction_loss(
     denom = 1 - b_i_norm_sqr  # (B, K)
     fst_term = const * b_i / denom[:, :, None]  # (B, K, M)
 
-    lhs = (
-        (m + 1) / 2 * phi_i[:, :, None] * grad_b_i_norm_sqr[:, None, :] / denom[:, :, None]
-    )  # (B, K, M)
-    lhs -= grad_phi_i
+    # This term is when the operator is not correclty defined
+    # lhs = (
+    #     (m + 1) / 2 * phi_i[:, :, None] * grad_b_i_norm_sqr[:, None, :] / denom[:, :, None]
+    # )  # (B, K, M)
+    # lhs -= grad_phi_i
 
-    reco = -torch.einsum("bkd,bkd->bk", lhs, fst_term)
+    lhs = grad_phi_i
+
+    reco = -torch.einsum("bkd,bkd->bk", lhs, fst_term.to(lhs.dtype))  # (B, K)
 
     loss = lambda_k[None, :] * phi_i - reco
-    loss = loss.pow(2).mean()
+    # loss = loss.pow(2).mean()
+    loss = loss.abs().pow(2).mean()
     return loss
 
 
@@ -466,7 +471,7 @@ def build_grad_phi(
     N, D = X.shape
     K = eig_vecs.shape[1]
     # Build the operateur \nabla phi
-    grad_phi = torch.zeros(N, K, X.shape[1], device=X.device, dtype=X.dtype)
+    grad_phi = torch.zeros(N, K, X.shape[1], device=X.device, dtype=eig_vecs.dtype)
     for i in tqdm(range(N)):
         # Cant't really batch it because not always the same
         # number of neighbors for each point. So we have to do it one by one.
