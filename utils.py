@@ -395,8 +395,8 @@ def reconstruction_loss(
     lambda_k: torch.Tensor,
     grad_phi_i: torch.Tensor,
     randers: RandersMetrics,
-    mu0: float,
-    mu1: float,
+    mu_0: float,
+    mu_1: float,
 ) -> torch.Tensor:
     """
     Computes the reconstruction loss from the paper.
@@ -414,33 +414,17 @@ def reconstruction_loss(
         grad_phi_i[b, k, d] = ∂phi_k / ∂x_d at point X_i[b].
     randers : RandersMetrics
         The Randers metric object.
-    mu0 : float
+    mu_0 : float
         The first moment of the kernel.
-    mu1 : float
+    mu_1 : float
         The second moment of the kernel.
     """
-    # Randers related quantities
-    b_i = randers.beta * randers.omega(X_i)  # (B, M)
-    b_i = b_i[:, None, :].repeat(1, grad_phi_i.shape[1], 1)  # (B, K, M)
-    b_i_norm_sqr = torch.norm(b_i, dim=-1) ** 2
-    grad_b_i_norm_sqr = torch.autograd.grad(b_i_norm_sqr.sum(), X_i, create_graph=True)[0]
-    m = b_i.shape[0]
-    const = mu1 / mu0 * (m + 1) / m
-
-    denom = 1 - b_i_norm_sqr  # (B, K)
-    fst_term = const * b_i / denom[:, :, None]  # (B, K, M)
-
-    # This term is when the operator is not correclty defined
-    # lhs = (
-    #     (m + 1) / 2 * phi_i[:, :, None] * grad_b_i_norm_sqr[:, None, :] / denom[:, :, None]
-    # )  # (B, K, M)
-    # lhs -= grad_phi_i
-
-    lhs = grad_phi_i
-
-    reco = -torch.einsum("bkd,bkd->bk", lhs, fst_term.to(lhs.dtype))  # (B, K)
-
-    loss = lambda_k[None, :] * phi_i - reco
+    b_x = randers.omega(X_i)*randers.beta
+    m = X_i.shape[1]
+    cst = mu_1 / mu_0 * (m+1) / m 
+    cst /= 1+ randers.base_cometric.dual_energy(X_i, b_x)
+    La = - cst[:,None] * torch.einsum("bkd,bd->bk", grad_phi_i, b_x.to(grad_phi_i.dtype))
+    loss = lambda_k[None, :] * phi_i - La.to(phi_i.dtype)
     # loss = loss.pow(2).mean()
     loss = loss.abs().pow(2).mean()
     return loss
