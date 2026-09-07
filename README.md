@@ -2,12 +2,10 @@
 
 # Installation
 
-The code requires the library `geodesic_toolbox`. It is recommend to use it inside a virtual environnement.
+We use uv for package management. To install the dependencies, run:
 
-```Shell
-git clone https://github.com/Theaublanchard/geodesic_toolbox.git
-cd geodesic_toolbox
-pip install -e .
+```bash
+uv install
 ```
 
 ## LICENSE

@@ -1,0 +1,23 @@
+[project]
+name = "finsler-embedding"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Theau Blanchard", email = "theau.blanchard@inria.fr" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "geodesic-toolbox>=0.1.0",
+    "matplotlib>=3.11.1",
+]
+
+[project.scripts]
+finsler-embedding = "finsler_embedding:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+geodesic-toolbox = { path = "/home/tblanchard/phd/geodesic_toolbox", editable = true }
