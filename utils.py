@@ -379,7 +379,7 @@ def local_poly_gradient(
 
     rhs = F - f0[:, None, :]  # (B, M, N)
     if rhs.is_complex():
-            A = A.to(rhs.dtype)
+        A = A.to(rhs.dtype)
     sol = torch.linalg.lstsq(A, rhs).solution
     grad = sol[:, :D, :].transpose(1, 2)  # (B, N, D)
     hess = torch.zeros(B, f0.shape[1], D, D, device=X.device, dtype=rhs.dtype)
@@ -419,11 +419,11 @@ def reconstruction_loss(
     mu_1 : float
         The second moment of the kernel.
     """
-    b_x = randers.omega(X_i)*randers.beta
+    b_x = randers.omega(X_i) * randers.beta
     m = X_i.shape[1]
-    cst = mu_1 / mu_0 * (m+1) / m 
-    cst /= 1+ randers.base_cometric.dual_energy(X_i, b_x)
-    La = - cst[:,None] * torch.einsum("bkd,bd->bk", grad_phi_i, b_x.to(grad_phi_i.dtype))
+    cst = mu_1 / mu_0 * (m + 1) / m
+    cst /= 1 + randers.base_cometric.dual_energy(X_i, b_x)
+    La = -cst[:, None] * torch.einsum("bkd,bd->bk", grad_phi_i, b_x.to(grad_phi_i.dtype))
     loss = lambda_k[None, :] * phi_i - La.to(phi_i.dtype)
     # loss = loss.pow(2).mean()
     loss = loss.abs().pow(2).mean()
@@ -472,3 +472,33 @@ def build_grad_phi(
         )  # (1, N, D), (1, N, D, D)
         grad_phi[i, :, :] = grad_phi_i_[0]
     return grad_phi
+
+
+def construct_distance_matrix(
+    X: torch.Tensor, edges: torch.Tensor, randers: RandersMetrics, batch_size: int = 100
+) -> torch.Tensor:
+    """
+    Constructs the weights matrix W for the given data points X and edges using the Randers metric.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points.
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    randers : RandersMetrics
+        The Randers metric object.
+
+    Returns:
+    -------
+    dst_mat : torch.Tensor (M,)
+        The distance matrix for the given edges.
+    """
+    solver = GEORCEFinsler(finsler=randers, T=25,max_iter=20)
+    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
+    for i in tqdm(range(0, edges.shape[0], batch_size)):
+        batch_edges = edges[i : i + batch_size]
+        x_i = X[batch_edges[:, 0]]
+        x_j = X[batch_edges[:, 1]]
+        dst_mat[i : i + batch_size] = solver(x_i, x_j)
+    return dst_mat
