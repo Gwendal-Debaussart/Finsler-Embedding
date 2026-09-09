@@ -1,7 +1,42 @@
 import torch
 from sklearn.neighbors import kneighbors_graph
 from geodesic_toolbox import *
+from scipy.special import factorial
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+
+def get_bounds(embeddings: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
+    """
+    Compute the bounds of the embeddings.
+
+    Parameters:
+    ----------
+    embeddings : torch.Tensor (n_points, 2)
+        The embeddings of the points.
+    margin : float
+        Margin scaling factor to add to the bounds. (default is 0)
+        This is useful to avoid points being too close to the edges of the plot.
+
+    Returns:
+    -------
+    torch.Tensor (4,)
+        [min_x, max_x, min_y, max_y], the bounds of the embeddings.
+    """
+    min_x, max_x = embeddings[:, 0].min(), embeddings[:, 0].max()
+    min_y, max_y = embeddings[:, 1].min(), embeddings[:, 1].max()
+    # Add margin to the bounds
+    min_x -= margin * (max_x - min_x)
+    max_x += margin * (max_x - min_x)
+    min_y -= margin * (max_y - min_y)
+    max_y += margin * (max_y - min_y)
+    # Ensure the bounds are in the correct order
+    min_x, max_x = min(min_x, max_x), max(min_x, max_x)
+    min_y, max_y = min(min_y, max_y), max(min_y, max_y)
+    # Create a tensor with the bounds
+    bounds = [min_x, max_x, min_y, max_y]
+    bounds = torch.tensor(bounds)
+    return bounds
 
 
 def find_espilon(dst_mat: torch.Tensor) -> float:
@@ -21,7 +56,7 @@ def find_espilon(dst_mat: torch.Tensor) -> float:
     upper_triangular = dst_mat[torch.triu(torch.ones(dst_mat.shape), diagonal=1) == 1]
     # Filter zero values
     upper_triangular = upper_triangular[upper_triangular > 0]
-    epsilon = upper_triangular.std()
+    epsilon = upper_triangular.std().item()
     return epsilon
 
 
@@ -474,6 +509,33 @@ def build_grad_phi(
     return grad_phi
 
 
+def get_knn_graph(X: torch.Tensor, n_neighbors: int, device: torch.device) -> torch.Tensor:
+    """
+    Computes the k-nearest neighbors graph for the given data points.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points.
+    n_neighbors : int
+        The number of neighbors to consider for each point.
+    device : torch.device
+        The device to which the output tensor should be moved.
+
+    Returns:
+    -------
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    """
+    graph = kneighbors_graph(
+        X.detach().cpu().numpy(), n_neighbors=n_neighbors, mode='distance', include_self=False
+    )
+    # Retrieve al the pairs of edges from the graph
+    edges = np.array(graph.nonzero()).T
+    edges = torch.from_numpy(edges).to(device)
+    return edges
+
+
 def construct_distance_matrix(
     X: torch.Tensor, edges: torch.Tensor, randers: RandersMetrics, batch_size: int = 100
 ) -> torch.Tensor:
@@ -492,9 +554,9 @@ def construct_distance_matrix(
     Returns:
     -------
     dst_mat : torch.Tensor (M,)
-        The distance matrix for the given edges.
+        The distance matrix for the given edges such that dst_mat[i] = dst(X[edges[i, 0]], X[edges[i, 1]]) under the Randers metric.
     """
-    solver = GEORCEFinsler(finsler=randers, T=25,max_iter=20)
+    solver = GEORCEFinsler(finsler=randers, T=25, max_iter=10)
     dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
     for i in tqdm(range(0, edges.shape[0], batch_size)):
         batch_edges = edges[i : i + batch_size]
@@ -502,3 +564,560 @@ def construct_distance_matrix(
         x_j = X[batch_edges[:, 1]]
         dst_mat[i : i + batch_size] = solver(x_i, x_j)
     return dst_mat
+
+
+def compute_epsilon_rate(N: int, m: int) -> float:
+    """
+    Computes the epsilon value based on the number of points N and the dimension m.
+    This is a heuristic to set the scale of the kernel based on the data.
+    It usually sucks and give waaaay too low values of epsilon.
+
+    Parameters:
+    ----------
+    N : int
+        The number of data points.
+    m : int
+        The dimension of the data.
+
+    Returns:
+    -------
+    epsilon : float
+        The computed epsilon value.
+    """
+    return (np.log(N) / N) ** (1 / m + 4)
+
+
+def compute_epsilon_empirical(edges: torch.Tensor, dst_edges: torch.Tensor, N: int) -> float:
+    """
+    Find epsilon the standard deviation of the non-zero values of the upper
+    triangular part of the distance matrix, excluding the diagonal.
+
+    Parameters:
+    -----------
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    dst_edges : torch.Tensor (M,)
+        The distances corresponding to the edges where dst_edges[i] = dst(X[edges[i, 0]], X[edges[i, 1]]) under the Randers metric.
+    N : int
+        The number of data points.
+
+    Returns:
+    --------
+    epsilon : float
+        The standard deviation of the non-zero values of the upper triangular part of the distance matrix, excluding the diagonal.
+    """
+    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
+    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
+    upper_triangular = dst_mat[torch.triu(torch.ones(dst_mat.shape), diagonal=1) == 1]
+    # Filter zero values
+    upper_triangular = upper_triangular[upper_triangular > 0]
+    return upper_triangular.std().item()
+
+
+def laplacian_kernel(
+    edges: torch.Tensor, dst_edges: torch.Tensor, eps: float, N: int, m: int = 2
+):
+    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
+    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
+
+    W = torch.zeros_like(dst_mat)
+    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] / eps)
+    W.fill_diagonal_(0)
+
+    mu_0 = factorial(m - 1)
+    mu_1 = factorial(m)
+    return W, mu_0, mu_1
+
+
+def gaussian_kernel(edges, dst_edges, eps: float, N: int, m: int = 2):
+    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
+    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
+
+    W = torch.zeros_like(dst_mat)
+    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] ** 2 / eps**2)
+    W.fill_diagonal_(0)
+
+    mu_0 = 1 / 2 * torch.lgamma(torch.tensor(m) / 2).exp()
+    mu_1 = 1 / 2 * torch.lgamma(torch.tensor(m + 1) / 2).exp()
+
+    return W, mu_0, mu_1
+
+
+def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
+    D = torch.diag_embed(torch.sum(W, dim=1))
+    D_prime = torch.diag_embed(torch.sum(W, dim=0))
+    Q = (D + D_prime) / 2
+    Q_theta = torch.matrix_power(Q, theta)
+    W_theta = torch.inverse(Q_theta) @ W @ torch.inverse(Q_theta)
+    D_theta = torch.diag_embed(torch.sum(W_theta, dim=1))
+    D_theta_prime = torch.diag_embed(torch.sum(W_theta, dim=0))
+    D_theta_s = (D_theta + D_theta_prime) / 2
+    D_theta_a = (D_theta - D_theta_prime) / 2
+    W_theta_s = (W_theta + W_theta.T) / 2
+    W_theta_a = (W_theta - W_theta.T) / 2
+
+    Id = torch.eye(W_theta.shape[0]).to(W_theta.device).to(W_theta.dtype)
+    P_theta_s = torch.inverse(D_theta_s) @ W_theta_s - Id
+    P_theta_a = torch.inverse(D_theta_s) @ (W_theta_a - D_theta_a)
+
+    L_theta_s = 1 / eps**2 * P_theta_s
+    L_theta_a = 1 / eps * P_theta_a
+    return L_theta_s, L_theta_a
+
+
+##############################
+# Helpers
+##############################
+
+
+def b_to_v(b_val, A_inv_val):
+    """
+    Transform the vector b to v using the cometric A_inv.
+
+    Parameters:
+    ----------
+    b_val : torch.Tensor (B, d)
+        The vector b in the tangent space.
+    A_inv_val : torch.Tensor (B, d, d) or (B, d)
+        The inverse metric tensor A_inv at the point, which can be either a full matrix or a diagonal representation.
+
+    Returns:
+    -------
+    v_val : torch.Tensor (B, d)
+        The vector v in the tangent space, computed from b and A_inv.
+    """
+    if A_inv_val.ndim == 3:  # Full matrix case
+        Ab = torch.einsum("bij,bj->bi", A_inv_val, b_val)
+    elif A_inv_val.ndim == 2:  # Diagonal case
+        Ab = A_inv_val * b_val
+    else:
+        raise ValueError("A_inv_val must be either a 2D or 3D tensor.")
+
+    b_norm_sqr = torch.einsum("bi,bi->b", b_val, Ab)
+    denom = 1 - b_norm_sqr
+    v_val = Ab / denom.unsqueeze(-1)
+    return v_val
+
+
+def v_to_b(v_val, A_val):
+    """
+    Revert the transformation from v to b using the cometric A.
+
+    Parameters:
+    ----------
+    v_val : torch.Tensor (B, d)
+        The vector v in the tangent space.
+    A_val : torch.Tensor (B, d, d) or (B, d)
+        The metric tensor A at the point, which can be either a full matrix or a diagonal representation.
+
+    Returns:
+    -------
+    b_val : torch.Tensor (B, d)
+        The vector b in the tangent space, computed from v and A.
+    """
+    if A_val.ndim == 3:  # Full matrix case
+        Av = torch.einsum("bij,bj->bi", A_val, v_val)
+    elif A_val.ndim == 2:  # Diagonal case
+        Av = A_val * v_val
+    else:
+        raise ValueError("A_val must be either a 2D or 3D tensor.")
+
+    v_norm_sqr = torch.einsum("bi,bi->b", v_val, Av)
+    denom = 1 + (1 + 4 * v_norm_sqr).sqrt()
+    b_val = 2 * Av / denom.unsqueeze(-1)
+    return b_val
+
+
+##############################
+# Define the test functions
+##############################
+
+
+def plot_side_by_side(X, b_true, b_hat):
+    """
+    Plots the true vector field, the estimated vector field, and the error between them side by side.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, 2)
+        The input points in 2D space.
+    b_true : torch.Tensor (N, 2)
+        The true vector field values at the input points.
+    b_hat : torch.Tensor (N, 2)
+        The estimated vector field values at the input points.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    axes[0].quiver(
+        X[:, 0].detach().cpu(),
+        X[:, 1].detach().cpu(),
+        b_true[:, 0].detach().cpu(),
+        b_true[:, 1].detach().cpu(),
+        color='blue',
+        scale=5,
+        angles='xy',
+        scale_units='xy',
+    )
+    axes[0].set_title("True b vector field")
+    axes[1].quiver(
+        X[:, 0].detach().cpu(),
+        X[:, 1].detach().cpu(),
+        b_hat[:, 0].detach().cpu(),
+        b_hat[:, 1].detach().cpu(),
+        color='red',
+        scale=5,
+        angles='xy',
+        scale_units='xy',
+    )
+    axes[1].set_title("Estimated b vector field")
+    axes[2].quiver(
+        X[:, 0].detach().cpu(),
+        X[:, 1].detach().cpu(),
+        (b_true - b_hat)[:, 0].detach().cpu(),
+        (b_true - b_hat)[:, 1].detach().cpu(),
+        color='green',
+        scale=5,
+        angles='xy',
+        scale_units='xy',
+    )
+    axes[2].set_title("Error in b vector field")
+    plt.tight_layout()
+    return fig,axes
+
+
+def bump_function(x: torch.Tensor, center: torch.Tensor, radius: float) -> torch.Tensor:
+    """
+    A smooth bump function that is 1 at the center and smoothly decays to 0 at the radius.
+
+    Parameters:
+    ----------
+    x : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+    center : torch.Tensor (D,)
+        The center of the bump function.
+    radius : float
+        The radius of the bump function.
+
+    Returns:
+    -------
+    torch.Tensor (B,)
+        The values of the bump function at the input points.
+    """
+    distance = torch.norm(x - center, dim=-1)
+    return torch.where(
+        distance < radius,
+        torch.exp(-1 / (1 - (distance / radius) ** 2)),
+        torch.zeros_like(distance),
+    )
+
+
+def gaussian(x: torch.Tensor, center: torch.Tensor, sigma: float) -> torch.Tensor:
+    """
+    A Gaussian function centered at the given point.
+
+    Parameters:
+    ----------
+    x : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+    center : torch.Tensor (D,)
+        The center of the Gaussian function.
+    sigma : float
+        The standard deviation of the Gaussian function.
+
+    Returns:
+    -------
+    torch.Tensor (B,)
+        The values of the Gaussian function at the input points.
+    """
+    distance_squared = torch.sum((x - center) ** 2, dim=-1)
+    return torch.exp(-distance_squared / (2 * sigma**2))
+
+
+def random_sin(X: torch.Tensor) -> torch.Tensor:
+    """
+    A random sine function with random frequency and phase.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+
+    Returns:
+    -------
+    torch.Tensor (B,)
+        The values of the random sine function at the input points.
+    """
+    phase = torch.rand(1) * 2 * np.pi
+    frequency = torch.rand(1) * 5 + 1  # Random frequency between 1 and 6
+    return torch.sin(frequency * X + phase).sum(dim=-1)
+
+
+def mexican_hat(X):
+    """
+    A Mexican hat function (Ricker wavelet) in D dimensions.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+
+    Returns:
+    -------
+    torch.Tensor (B,)
+        The values of the Mexican hat function at the input points.
+    """
+    norm_squared = torch.sum(X**2, dim=-1)
+    return (1 - norm_squared) * torch.exp(-norm_squared / 2)
+
+
+def scaled_mexican_hat(X, scale: float, center: torch.Tensor) -> torch.Tensor:
+    """
+    A scaled Mexican hat function (Ricker wavelet) in D dimensions.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+    scale : float
+        The scale parameter of the Mexican hat function.
+    center : torch.Tensor (D,)
+        The center parameter of the Mexican hat function.
+
+    Returns:
+    -------
+    torch.Tensor (B,)
+        The values of the scaled Mexican hat function at the input points.
+    """
+    return mexican_hat((X - center) / scale) / scale ** (X.shape[1] / 2)
+
+
+def gaussian_family(
+    X: torch.Tensor,
+    L_theta_a: torch.Tensor,
+    sigma_list: list[float],
+):
+    """
+    A family of Gaussian functions with different scales.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+    L_theta_a : torch.Tensor (N, N)
+        The antisymmetric part of the normalized Laplacian operator.
+    sigma_list : list[float]
+        A list of standard deviations for the Gaussian functions.
+
+    Returns:
+    -------
+    f_values : torch.Tensor (K, N)
+        The values of the Gaussian functions at the input points.
+    Lf_values : torch.Tensor (K, N)
+        The values of the Laplacian applied to the Gaussian functions at the input points.
+    f_grad_values : torch.Tensor (K, N, D)
+        The gradients of the Gaussian functions at the input points.
+    """
+    K_ = X.shape[0]  # Number of test functions, one for each point in X
+    K = len(sigma_list) * K_
+
+    f_values = []
+    Lf_values = []
+    f_grad_values = []
+
+    for sigma in sigma_list:
+        f_values_radius = torch.zeros((K_, X.shape[0]))
+        Lf_values_radius = torch.zeros((K_, X.shape[0]))
+        f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
+        X.requires_grad_()
+        for i in range(K_):
+            center = X[i].detach()  # (D,)
+            f_ = gaussian(X, center=center.detach(), sigma=sigma)  # (N,)
+            f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
+
+            f_values_radius[i] = f_
+            f_grad_values_radius[i] = f_grad_
+            Lf_values_radius[i] = L_theta_a @ f_  # (N,)
+
+        f_values.append(f_values_radius.detach())
+        Lf_values.append(Lf_values_radius.detach())
+        f_grad_values.append(f_grad_values_radius.detach())
+
+    f_values = torch.cat(f_values, dim=0)  # (K, N)
+    Lf_values: torch.Tensor = torch.cat(Lf_values, dim=0)  # (K, N)
+    f_grad_values = torch.cat(f_grad_values, dim=0)  # (K, N, D)
+
+    return f_values, Lf_values, f_grad_values
+
+
+def mexican_family(
+    X: torch.Tensor,
+    L_theta_a: torch.Tensor,
+    scale_list: list[float],
+):
+    """
+    A family of Mexican hat functions with different scales.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (B, D)
+        The input points in D-dimensional space.
+    L_theta_a : torch.Tensor (N, N)
+        The antisymmetric part of the normalized Laplacian operator.
+    scale_list : list[float]
+        A list of scales for the Mexican hat functions.
+
+    Returns:
+    -------
+    f_values : torch.Tensor (K, N)
+        The values of the Mexican hat functions at the input points.
+    Lf_values : torch.Tensor (K, N)
+        The values of the Laplacian applied to the Mexican hat functions at the input points.
+    f_grad_values : torch.Tensor (K, N, D)
+        The gradients of the Mexican hat functions at the input points.
+    """
+    K_ = X.shape[0]  # Number of test functions, one for each point in X
+    K = len(scale_list) * K_
+
+    f_values = []
+    Lf_values = []
+    f_grad_values = []
+
+    for scale in scale_list:
+        f_values_radius = torch.zeros((K_, X.shape[0]))
+        Lf_values_radius = torch.zeros((K_, X.shape[0]))
+        f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
+        X.requires_grad_()
+        for i in range(K_):
+            center = X[i].detach()  # (D,)
+            f_ = scaled_mexican_hat(X, center=center.detach(), scale=scale)  # (N,)
+            f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
+
+            f_values_radius[i] = f_
+            f_grad_values_radius[i] = f_grad_
+            Lf_values_radius[i] = L_theta_a @ f_  # (N,)
+
+        f_values.append(f_values_radius.detach())
+        Lf_values.append(Lf_values_radius.detach())
+        f_grad_values.append(f_grad_values_radius.detach())
+
+    f_values = torch.cat(f_values, dim=0)  # (K, N)
+    Lf_values: torch.Tensor = torch.cat(Lf_values, dim=0)  # (K, N)
+    f_grad_values = torch.cat(f_grad_values, dim=0)  # (K, N, D)
+
+    return f_values, Lf_values, f_grad_values
+
+
+##############################
+# Solver analytical
+##############################
+
+
+def solve_lstsq(f_grad_values: torch.Tensor, Lf_values: torch.Tensor, c_km: float):
+    """
+    Solves the separable least squares problem:
+        min_v sum_{k,i} |Lf_k(x_i) - c_km <v(x_i), grad f_k(x_i)>|^2
+    independently at each spatial point x_i.
+
+    Parameters:
+    ----------
+    f_grad_values : torch.Tensor (K, N, d)
+        The gradients of the test functions, where K is the number of test functions, N is the number of data points, and d is the dimension of the space.
+    Lf_values : torch.Tensor (K, N)
+        The values of the operator applied to the test functions, where K is the number of test functions and N is the number of data points.
+    c_km : float
+        A scaling constant for the least squares problem.
+
+    Returns:
+    -------
+    v_est : torch.Tensor (N, d)
+        The estimated vector field v at each data point, where N is the number of data points and d is the dimension of the space.
+    """
+    K, N, d = f_grad_values.shape
+
+    if Lf_values.shape != (K, N):
+        raise ValueError(
+            f"Expected Lf_values to have shape {(K, N)}, " f"got {Lf_values.shape}"
+        )
+
+    # Rearrange to have one least-squares system A[i] for every x_i.
+    A = c_km * rearrange(f_grad_values, "k n d -> n k d")
+    b = rearrange(
+        Lf_values,
+        "k n -> n k 1",
+    )
+
+    v_est = torch.linalg.lstsq(A, b).solution
+    v_est = rearrange(v_est, "n d 1 -> n d")
+
+    return v_est
+
+
+##############################
+# Solver deep
+##############################
+
+
+class V_estimator(torch.nn.Module):
+    def __init__(self, hidden_dims: list[int], dim: int = 2):
+        super().__init__()
+        self.hidden_dims = hidden_dims
+        self.dim = dim
+        layers = []
+        input_dim = dim
+        for h_dim in hidden_dims:
+            layers.append(torch.nn.Linear(input_dim, h_dim))
+            layers.append(torch.nn.SiLU())
+            input_dim = h_dim
+        layers.append(torch.nn.Linear(input_dim, dim))
+        self.model = torch.nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class OmegaFromV(torch.nn.Module):
+    def __init__(self, v_estimator: V_estimator, cometric: CoMetric):
+        super().__init__()
+        self.v_estimator = v_estimator
+        self.cometric = cometric
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        v_x = self.v_estimator(x)
+        A_x = self.cometric.metric_tensor(x)
+        return v_to_b(v_x, A_x)
+
+
+def learn_v(
+    X: torch.Tensor,
+    f_values: torch.Tensor,
+    Lf_values: torch.Tensor,
+    f_grad_values: torch.Tensor,
+    c_km: float,
+    v_model: V_estimator,
+    device: torch.device = torch.device("cpu"),
+    b_size: int = 128,
+    n_epochs: int = 1000,
+) -> list[float]:
+    optim = torch.optim.Adam(v_model.parameters(), lr=1e-3)
+
+    loss_list = []
+    pbar = tqdm(range(n_epochs), desc="Learning v")
+    for epoch in pbar:
+        idx_i = torch.randint(0, X.shape[0], (b_size,), device=device)
+        if epoch == 0:
+            idx_k = torch.arange(0, f_values.shape[0] - 1, device=device)
+        else:
+            idx_k = torch.randint(0, f_values.shape[0], (b_size,), device=device)
+        X_i = X[idx_i].requires_grad_(True)  # (B, D)
+
+        lf_i = Lf_values[idx_k, :][:, idx_i].detach()  # (K, B)
+        grad_f_i = f_grad_values[idx_k, :][:, idx_i, :].detach()  # (K, B, D)
+        v_x = v_model(X_i)  # (B, D)
+        dot_product = c_km * torch.einsum("kbd,bd->kb", grad_f_i, v_x)  # (K, B)
+        loss = torch.nn.functional.mse_loss(dot_product, lf_i.detach())  # (K, B)
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
+        loss_list.append(loss.item())
+
+        pbar.set_description(f"Loss: {loss.item():.4e}")
+    return loss_list

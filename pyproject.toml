@@ -4,12 +4,16 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Theau Blanchard", email = "theau.blanchard@inria.fr" }
+    { name = "Theau Blanchard", email = "theau.blanchard@inria.fr" },
+    { name = "Gwendal Debaussart-Joniec", email = "gwendal.debaussart@ens-paris-saclay.fr" }
 ]
 requires-python = ">=3.13"
 dependencies = [
     "geodesic-toolbox>=0.1.0",
+    "ipykernel>=7.3.0",
     "matplotlib>=3.11.1",
+    "pandas>=3.0.5",
+    "seaborn>=0.13.2",
 ]
 
 [project.scripts]
