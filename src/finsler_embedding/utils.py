@@ -1,3 +1,5 @@
+import logging
+
 import torch
 from sklearn.neighbors import kneighbors_graph
 from geodesic_toolbox import *
@@ -509,6 +511,26 @@ def build_grad_phi(
     return grad_phi
 
 
+def symmetrize_edges(edges: torch.Tensor) -> torch.Tensor:
+    """
+    Symmetrizes the edges of a graph represented by a tensor of shape (M, 2).
+    So that if (i, j) is an edge, then (j, i) is also an edge.
+
+    Parameters:
+    ----------
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+
+    Returns:
+    -------
+    sym_edges : torch.Tensor (M', 2)
+        The symmetrized edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    """
+    sym_edges = torch.cat([edges, edges.flip(1)], dim=0)
+    sym_edges = torch.unique(sym_edges, dim=0)
+    return sym_edges
+
+
 def get_knn_graph(X: torch.Tensor, n_neighbors: int, device: torch.device) -> torch.Tensor:
     """
     Computes the k-nearest neighbors graph for the given data points.
@@ -527,20 +549,66 @@ def get_knn_graph(X: torch.Tensor, n_neighbors: int, device: torch.device) -> to
     edges : torch.Tensor (M, 2)
         The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
     """
+    if n_neighbors == -1:
+        # Fully connected graph
+        N = X.shape[0]
+        edges = torch.combinations(torch.arange(N, device=device), r=2)
+        return edges
+
     graph = kneighbors_graph(
         X.detach().cpu().numpy(), n_neighbors=n_neighbors, mode='distance', include_self=False
     )
     # Retrieve al the pairs of edges from the graph
     edges = np.array(graph.nonzero()).T
     edges = torch.from_numpy(edges).to(device)
+    edges = symmetrize_edges(edges)
     return edges
 
 
-def construct_distance_matrix(
-    X: torch.Tensor, edges: torch.Tensor, randers: RandersMetrics, batch_size: int = 100
+def distance_matrix_straight_line(
+    X: torch.Tensor,
+    edges: torch.Tensor,
+    randers: RandersMetrics,
+    batch_size: int = 100,
+    num_quad_points: int = 100,
 ) -> torch.Tensor:
     """
-    Constructs the weights matrix W for the given data points X and edges using the Randers metric.
+    Compute Randers distances along straight-line segments for graph edges.
+
+    The integral
+        d_F(x_i, x_j) = ∫_0^1 F(x_i + t(x_j-x_i), x_j-x_i) dt
+    is evaluated using composite trapezoidal quadrature on [0, 1].
+    """
+    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
+
+    t = torch.linspace(0.0, 1.0, num_quad_points, device=X.device, dtype=X.dtype)
+
+    for start in tqdm(
+        range(0, edges.shape[0], batch_size), desc="Computing Randers distances"
+    ):
+        batch_edges = edges[start : start + batch_size]
+        x0 = X[batch_edges[:, 0]]
+        x1 = X[batch_edges[:, 1]]
+        dx = x1 - x0
+        x = x0[:, None, :] + t[None, :, None] * dx[:, None, :]
+        v = dx[:, None, :].expand(-1, num_quad_points, -1)
+        F = randers(x.reshape(-1, X.shape[-1]), v.reshape(-1, X.shape[-1]))
+        F = F.reshape(x.shape[0], num_quad_points)
+        dst = torch.trapezoid(F, t, dim=1)
+
+        dst_mat[start : start + batch_edges.shape[0]] = dst
+
+    return dst_mat
+
+
+def georce_distance_matrix(
+    X: torch.Tensor,
+    edges: torch.Tensor,
+    randers: RandersMetrics,
+    batch_size: int = 100,
+) -> torch.Tensor:
+    """
+    Compute the geodesic distance matrix for a set of edges and a Randers metric.
 
     Parameters:
     ----------
@@ -550,19 +618,57 @@ def construct_distance_matrix(
         The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
     randers : RandersMetrics
         The Randers metric object.
+    batch_size : int
+        The batch size for computing distances. (default is 100)
 
     Returns:
     -------
-    dst_mat : torch.Tensor (M,)
-        The distance matrix for the given edges such that dst_mat[i] = dst(X[edges[i, 0]], X[edges[i, 1]]) under the Randers metric.
+    dst_mat : torch.Tensor (N, N)
+        The constructed distance matrix.
     """
-    solver = GEORCEFinsler(finsler=randers, T=25, max_iter=10)
     dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
-    for i in tqdm(range(0, edges.shape[0], batch_size)):
-        batch_edges = edges[i : i + batch_size]
-        x_i = X[batch_edges[:, 0]]
-        x_j = X[batch_edges[:, 1]]
-        dst_mat[i : i + batch_size] = solver(x_i, x_j)
+    solver = GEORCEFinsler(finsler=randers, T=25, max_iter=20)
+    for start in tqdm(
+        range(0, edges.shape[0], batch_size), desc="Computing Randers distances"
+    ):
+        batch_edges = edges[start : start + batch_size]
+        x0 = X[batch_edges[:, 0]]
+        x1 = X[batch_edges[:, 1]]
+        dst = solver(x0, x1)
+        dst_mat[start : start + batch_edges.shape[0]] = dst
+    return dst_mat
+
+
+def construct_distance_matrix(
+    X: torch.Tensor,
+    edges: torch.Tensor,
+    randers: RandersMetrics,
+    batch_size: int = 100,
+    use_approx: bool = True,
+) -> torch.Tensor:
+    """Construct a distance matrix from a set of edges and a Randers metric.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points.
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    randers : RandersMetrics
+        The Randers metric object.
+    batch_size : int
+        The batch size for computing distances. (default is 100)
+    use_approx : bool
+        Whether to use the straight-line approximation for distance computation. If False, the geodesic distance is computed. (default is True)
+    Returns:
+    -------
+    dst_mat : torch.Tensor (N, N)
+        The constructed distance matrix.
+    """
+    if use_approx:
+        dst_mat = distance_matrix_straight_line(X, edges, randers, batch_size=batch_size)
+    else:
+        dst_mat = georce_distance_matrix(X, edges, randers, batch_size=batch_size)
     return dst_mat
 
 
@@ -587,31 +693,31 @@ def compute_epsilon_rate(N: int, m: int) -> float:
     return (np.log(N) / N) ** (1 / m + 4)
 
 
-def compute_epsilon_empirical(edges: torch.Tensor, dst_edges: torch.Tensor, N: int) -> float:
+
+def compute_epsilon_empirical(X: torch.Tensor)->float:
     """
-    Find epsilon the standard deviation of the non-zero values of the upper
-    triangular part of the distance matrix, excluding the diagonal.
+    Compute the bandwidth parameter as the min max distance between points in the dataset X.
 
     Parameters:
-    -----------
-    edges : torch.Tensor (M, 2)
-        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-    dst_edges : torch.Tensor (M,)
-        The distances corresponding to the edges where dst_edges[i] = dst(X[edges[i, 0]], X[edges[i, 1]]) under the Randers metric.
-    N : int
-        The number of data points.
+    ----------
+    X : torch.Tensor (N, D)
+        The input points.
 
     Returns:
-    --------
+    -------
     epsilon : float
-        The standard deviation of the non-zero values of the upper triangular part of the distance matrix, excluding the diagonal.
+        The computed bandwidth parameter.
     """
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-    upper_triangular = dst_mat[torch.triu(torch.ones(dst_mat.shape), diagonal=1) == 1]
-    # Filter zero values
-    upper_triangular = upper_triangular[upper_triangular > 0]
-    return upper_triangular.std().item()
+    neighbor_rank = 2
+    eps = 1e-8
+    K = X.shape[0]
+    dst_centroids = torch.cdist(X, X, p=2)  # (K,K)
+    dst_centroids.fill_diagonal_(float("inf"))
+    sorted_dst, _ = torch.sort(dst_centroids, dim=1)
+    rank = min(max(neighbor_rank - 1, 0), max(K - 2, 0))  # (K,)
+    nn_dist = sorted_dst[:, rank]  # (K,)
+    nn_scale2 = nn_dist.pow(2).clamp_min(eps)
+    return nn_scale2.mean().item()
 
 
 def laplacian_kernel(
@@ -644,21 +750,25 @@ def gaussian_kernel(edges, dst_edges, eps: float, N: int, m: int = 2):
 
 
 def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
-    D = torch.diag_embed(torch.sum(W, dim=1))
-    D_prime = torch.diag_embed(torch.sum(W, dim=0))
+    D = torch.sum(W, dim=1)
+    D_prime = torch.sum(W, dim=0)
     Q = (D + D_prime) / 2
-    Q_theta = torch.matrix_power(Q, theta)
-    W_theta = torch.inverse(Q_theta) @ W @ torch.inverse(Q_theta)
-    D_theta = torch.diag_embed(torch.sum(W_theta, dim=1))
-    D_theta_prime = torch.diag_embed(torch.sum(W_theta, dim=0))
-    D_theta_s = (D_theta + D_theta_prime) / 2
-    D_theta_a = (D_theta - D_theta_prime) / 2
+    Q_theta = Q**theta
+    Q_inv_theta = 1 / Q_theta
+    Q_theta = torch.diag_embed(Q_theta)
+    Q_inv_theta = torch.diag_embed(Q_inv_theta)
+
+    W_theta = Q_inv_theta @ W @ Q_inv_theta
     W_theta_s = (W_theta + W_theta.T) / 2
     W_theta_a = (W_theta - W_theta.T) / 2
+    D_theta_s = torch.sum(W_theta_s, dim=1)
+    D_theta_a = torch.sum(W_theta_a, dim=1)
+    D_theta_a = torch.diag_embed(D_theta_a)
+    D_theta_s_inv = 1 / D_theta_s
 
     Id = torch.eye(W_theta.shape[0]).to(W_theta.device).to(W_theta.dtype)
-    P_theta_s = torch.inverse(D_theta_s) @ W_theta_s - Id
-    P_theta_a = torch.inverse(D_theta_s) @ (W_theta_a - D_theta_a)
+    P_theta_s = D_theta_s_inv[..., None] * W_theta_s - Id
+    P_theta_a = D_theta_s_inv[..., None] * (W_theta_a - D_theta_a)
 
     L_theta_s = 1 / eps**2 * P_theta_s
     L_theta_a = 1 / eps * P_theta_a
@@ -728,9 +838,41 @@ def v_to_b(v_val, A_val):
     return b_val
 
 
-##############################
-# Define the test functions
-##############################
+def plot_mf_and_omega(
+    base_cometric: CoMetric, X: torch.Tensor, randers_metric: RandersMetrics, bounds: tuple
+) -> tuple:
+    mf = get_mf_image(base_cometric, X, bounds)
+    omega_X = randers_metric.omega(X) * randers_metric.beta
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    im = axes[0].imshow(mf.cpu().numpy(), cmap="seismic", origin="lower", extent=bounds)
+    t_cbar = axes[0].scatter(
+        X[:, 0].detach().cpu(), X[:, 1].detach().cpu(), s=10, edgecolor="k", linewidth=0.5
+    )
+    axes[0].set_xlim(bounds[0], bounds[1])
+    axes[0].set_ylim(bounds[2], bounds[3])
+    axes[0].set_title("Density of the Dataset")
+    axes[1].scatter(X[:, 0].detach().cpu(), X[:, 1].detach().cpu(), s=10)
+    skip = 20  # Adjust this value to change the density of the quiver plot
+    axes[1].quiver(
+        X[::skip, 0].detach().cpu(),
+        X[::skip, 1].detach().cpu(),
+        omega_X[::skip, 0].detach().cpu(),
+        omega_X[::skip, 1].detach().cpu(),
+        color='red',
+        scale=1,
+        angles='xy',
+        scale_units='xy',
+    )
+    axes[1].set_title("Dataset with Omega vector field")
+    for ax in axes:
+        ax.set_xlabel("X-axis")
+        ax.set_ylabel("Y-axis")
+        ax.set_aspect('equal', adjustable='box')
+    fig.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
+    fig.colorbar(t_cbar, ax=axes[1], fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    return fig, axes
 
 
 def plot_side_by_side(X, b_true, b_hat):
@@ -781,7 +923,12 @@ def plot_side_by_side(X, b_true, b_hat):
     )
     axes[2].set_title("Error in b vector field")
     plt.tight_layout()
-    return fig,axes
+    return fig, axes
+
+
+##############################
+# Define the test functions
+##############################
 
 
 def bump_function(x: torch.Tensor, center: torch.Tensor, radius: float) -> torch.Tensor:
@@ -894,6 +1041,7 @@ def gaussian_family(
     X: torch.Tensor,
     L_theta_a: torch.Tensor,
     sigma_list: list[float],
+    K: int,
 ):
     """
     A family of Gaussian functions with different scales.
@@ -906,6 +1054,8 @@ def gaussian_family(
         The antisymmetric part of the normalized Laplacian operator.
     sigma_list : list[float]
         A list of standard deviations for the Gaussian functions.
+    K : int
+        The total number of test functions generated. Thus each sigma will have K / len(sigma_list) test functions.
 
     Returns:
     -------
@@ -916,8 +1066,7 @@ def gaussian_family(
     f_grad_values : torch.Tensor (K, N, D)
         The gradients of the Gaussian functions at the input points.
     """
-    K_ = X.shape[0]  # Number of test functions, one for each point in X
-    K = len(sigma_list) * K_
+    K_ = K // len(sigma_list)  # Number of test functions per sigma
 
     f_values = []
     Lf_values = []
@@ -928,8 +1077,9 @@ def gaussian_family(
         Lf_values_radius = torch.zeros((K_, X.shape[0]))
         f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
         X.requires_grad_()
+        idx_i = torch.randint(0, X.shape[0], (K_,), device=X.device)
         for i in range(K_):
-            center = X[i].detach()  # (D,)
+            center = X[idx_i[i]].detach()  # (D,)
             f_ = gaussian(X, center=center.detach(), sigma=sigma)  # (N,)
             f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
 
@@ -948,11 +1098,7 @@ def gaussian_family(
     return f_values, Lf_values, f_grad_values
 
 
-def mexican_family(
-    X: torch.Tensor,
-    L_theta_a: torch.Tensor,
-    scale_list: list[float],
-):
+def mexican_family(X: torch.Tensor, L_theta_a: torch.Tensor, scale_list: list[float], K: int):
     """
     A family of Mexican hat functions with different scales.
 
@@ -973,9 +1119,10 @@ def mexican_family(
         The values of the Laplacian applied to the Mexican hat functions at the input points.
     f_grad_values : torch.Tensor (K, N, D)
         The gradients of the Mexican hat functions at the input points.
+    K : int
+        The total number of test functions generated. Thus each scale will have K / len(scale_list) test functions.
     """
-    K_ = X.shape[0]  # Number of test functions, one for each point in X
-    K = len(scale_list) * K_
+    K_ = K // len(scale_list)  # Number of test functions per scale
 
     f_values = []
     Lf_values = []
@@ -986,8 +1133,9 @@ def mexican_family(
         Lf_values_radius = torch.zeros((K_, X.shape[0]))
         f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
         X.requires_grad_()
+        idx_i = torch.randint(0, X.shape[0], (K_,), device=X.device)
         for i in range(K_):
-            center = X[i].detach()  # (D,)
+            center = X[idx_i[i]].detach()  # (D,)
             f_ = scaled_mexican_hat(X, center=center.detach(), scale=scale)  # (N,)
             f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
 
@@ -1011,7 +1159,9 @@ def mexican_family(
 ##############################
 
 
-def solve_lstsq(f_grad_values: torch.Tensor, Lf_values: torch.Tensor, c_km: float):
+def solve_lstsq(
+    f_grad_values: torch.Tensor, Lf_values: torch.Tensor, c_km: float
+) -> torch.Tensor:
     """
     Solves the separable least squares problem:
         min_v sum_{k,i} |Lf_k(x_i) - c_km <v(x_i), grad f_k(x_i)>|^2

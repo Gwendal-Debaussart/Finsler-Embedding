@@ -1,2 +1,2 @@
-def main() -> None:
-    print("Hello from finsler-embedding!")
+from .logger import *
+from .utils import *
