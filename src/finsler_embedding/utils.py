@@ -78,7 +78,7 @@ def get_euclidean_knn_dst_matrix(z, n_neighbors=8):
     dst_mat : torch.Tensor (N, N)
       The distance matrix
     """
-    dst_mat = kneighbors_graph(z, n_neighbors=n_neighbors, mode='distance', include_self=False)
+    dst_mat = kneighbors_graph(z, n_neighbors=n_neighbors, mode="distance", include_self=False)
     dst_mat = dst_mat.toarray()  # Convert sparse matrix to dense array for visualization
     dst_mat = torch.tensor(dst_mat, dtype=torch.float32)
     return dst_mat
@@ -139,7 +139,7 @@ def loss_function_omega(
     omega_hat_i = omega_hat(z_i)  # (M, D)
     dz = z_j - z_i  # (M, D)
 
-    logits = torch.einsum('bi,bi->b', omega_hat_i, dz)  # (M,)
+    logits = torch.einsum("bi,bi->b", omega_hat_i, dz)  # (M,)
     loss = criterion(logits, beta_values)
     return loss
 
@@ -556,7 +556,7 @@ def get_knn_graph(X: torch.Tensor, n_neighbors: int, device: torch.device) -> to
         return edges
 
     graph = kneighbors_graph(
-        X.detach().cpu().numpy(), n_neighbors=n_neighbors, mode='distance', include_self=False
+        X.detach().cpu().numpy(), n_neighbors=n_neighbors, mode="distance", include_self=False
     )
     # Retrieve al the pairs of edges from the graph
     edges = np.array(graph.nonzero()).T
@@ -693,8 +693,7 @@ def compute_epsilon_rate(N: int, m: int) -> float:
     return (np.log(N) / N) ** (1 / m + 4)
 
 
-
-def compute_epsilon_empirical(X: torch.Tensor)->float:
+def compute_epsilon_empirical(X: torch.Tensor) -> float:
     """
     Compute the bandwidth parameter as the min max distance between points in the dataset X.
 
@@ -859,16 +858,16 @@ def plot_mf_and_omega(
         X[::skip, 1].detach().cpu(),
         omega_X[::skip, 0].detach().cpu(),
         omega_X[::skip, 1].detach().cpu(),
-        color='red',
+        color="red",
         scale=1,
-        angles='xy',
-        scale_units='xy',
+        angles="xy",
+        scale_units="xy",
     )
     axes[1].set_title("Dataset with Omega vector field")
     for ax in axes:
         ax.set_xlabel("X-axis")
         ax.set_ylabel("Y-axis")
-        ax.set_aspect('equal', adjustable='box')
+        ax.set_aspect("equal", adjustable="box")
     fig.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
     fig.colorbar(t_cbar, ax=axes[1], fraction=0.046, pad=0.04)
     plt.tight_layout()
@@ -894,10 +893,10 @@ def plot_side_by_side(X, b_true, b_hat):
         X[:, 1].detach().cpu(),
         b_true[:, 0].detach().cpu(),
         b_true[:, 1].detach().cpu(),
-        color='blue',
+        color="blue",
         scale=5,
-        angles='xy',
-        scale_units='xy',
+        angles="xy",
+        scale_units="xy",
     )
     axes[0].set_title("True b vector field")
     axes[1].quiver(
@@ -905,10 +904,10 @@ def plot_side_by_side(X, b_true, b_hat):
         X[:, 1].detach().cpu(),
         b_hat[:, 0].detach().cpu(),
         b_hat[:, 1].detach().cpu(),
-        color='red',
+        color="red",
         scale=5,
-        angles='xy',
-        scale_units='xy',
+        angles="xy",
+        scale_units="xy",
     )
     axes[1].set_title("Estimated b vector field")
     axes[2].quiver(
@@ -916,10 +915,10 @@ def plot_side_by_side(X, b_true, b_hat):
         X[:, 1].detach().cpu(),
         (b_true - b_hat)[:, 0].detach().cpu(),
         (b_true - b_hat)[:, 1].detach().cpu(),
-        color='green',
+        color="green",
         scale=5,
-        angles='xy',
-        scale_units='xy',
+        angles="xy",
+        scale_units="xy",
     )
     axes[2].set_title("Error in b vector field")
     plt.tight_layout()
@@ -927,238 +926,8 @@ def plot_side_by_side(X, b_true, b_hat):
 
 
 ##############################
-# Define the test functions
-##############################
-
-
-def bump_function(x: torch.Tensor, center: torch.Tensor, radius: float) -> torch.Tensor:
-    """
-    A smooth bump function that is 1 at the center and smoothly decays to 0 at the radius.
-
-    Parameters:
-    ----------
-    x : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-    center : torch.Tensor (D,)
-        The center of the bump function.
-    radius : float
-        The radius of the bump function.
-
-    Returns:
-    -------
-    torch.Tensor (B,)
-        The values of the bump function at the input points.
-    """
-    distance = torch.norm(x - center, dim=-1)
-    return torch.where(
-        distance < radius,
-        torch.exp(-1 / (1 - (distance / radius) ** 2)),
-        torch.zeros_like(distance),
-    )
-
-
-def gaussian(x: torch.Tensor, center: torch.Tensor, sigma: float) -> torch.Tensor:
-    """
-    A Gaussian function centered at the given point.
-
-    Parameters:
-    ----------
-    x : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-    center : torch.Tensor (D,)
-        The center of the Gaussian function.
-    sigma : float
-        The standard deviation of the Gaussian function.
-
-    Returns:
-    -------
-    torch.Tensor (B,)
-        The values of the Gaussian function at the input points.
-    """
-    distance_squared = torch.sum((x - center) ** 2, dim=-1)
-    return torch.exp(-distance_squared / (2 * sigma**2))
-
-
-def random_sin(X: torch.Tensor) -> torch.Tensor:
-    """
-    A random sine function with random frequency and phase.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-
-    Returns:
-    -------
-    torch.Tensor (B,)
-        The values of the random sine function at the input points.
-    """
-    phase = torch.rand(1) * 2 * np.pi
-    frequency = torch.rand(1) * 5 + 1  # Random frequency between 1 and 6
-    return torch.sin(frequency * X + phase).sum(dim=-1)
-
-
-def mexican_hat(X):
-    """
-    A Mexican hat function (Ricker wavelet) in D dimensions.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-
-    Returns:
-    -------
-    torch.Tensor (B,)
-        The values of the Mexican hat function at the input points.
-    """
-    norm_squared = torch.sum(X**2, dim=-1)
-    return (1 - norm_squared) * torch.exp(-norm_squared / 2)
-
-
-def scaled_mexican_hat(X, scale: float, center: torch.Tensor) -> torch.Tensor:
-    """
-    A scaled Mexican hat function (Ricker wavelet) in D dimensions.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-    scale : float
-        The scale parameter of the Mexican hat function.
-    center : torch.Tensor (D,)
-        The center parameter of the Mexican hat function.
-
-    Returns:
-    -------
-    torch.Tensor (B,)
-        The values of the scaled Mexican hat function at the input points.
-    """
-    return mexican_hat((X - center) / scale) / scale ** (X.shape[1] / 2)
-
-
-def gaussian_family(
-    X: torch.Tensor,
-    L_theta_a: torch.Tensor,
-    sigma_list: list[float],
-    K: int,
-):
-    """
-    A family of Gaussian functions with different scales.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-    L_theta_a : torch.Tensor (N, N)
-        The antisymmetric part of the normalized Laplacian operator.
-    sigma_list : list[float]
-        A list of standard deviations for the Gaussian functions.
-    K : int
-        The total number of test functions generated. Thus each sigma will have K / len(sigma_list) test functions.
-
-    Returns:
-    -------
-    f_values : torch.Tensor (K, N)
-        The values of the Gaussian functions at the input points.
-    Lf_values : torch.Tensor (K, N)
-        The values of the Laplacian applied to the Gaussian functions at the input points.
-    f_grad_values : torch.Tensor (K, N, D)
-        The gradients of the Gaussian functions at the input points.
-    """
-    K_ = K // len(sigma_list)  # Number of test functions per sigma
-
-    f_values = []
-    Lf_values = []
-    f_grad_values = []
-
-    for sigma in sigma_list:
-        f_values_radius = torch.zeros((K_, X.shape[0]))
-        Lf_values_radius = torch.zeros((K_, X.shape[0]))
-        f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
-        X.requires_grad_()
-        idx_i = torch.randint(0, X.shape[0], (K_,), device=X.device)
-        for i in range(K_):
-            center = X[idx_i[i]].detach()  # (D,)
-            f_ = gaussian(X, center=center.detach(), sigma=sigma)  # (N,)
-            f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
-
-            f_values_radius[i] = f_
-            f_grad_values_radius[i] = f_grad_
-            Lf_values_radius[i] = L_theta_a @ f_  # (N,)
-
-        f_values.append(f_values_radius.detach())
-        Lf_values.append(Lf_values_radius.detach())
-        f_grad_values.append(f_grad_values_radius.detach())
-
-    f_values = torch.cat(f_values, dim=0)  # (K, N)
-    Lf_values: torch.Tensor = torch.cat(Lf_values, dim=0)  # (K, N)
-    f_grad_values = torch.cat(f_grad_values, dim=0)  # (K, N, D)
-
-    return f_values, Lf_values, f_grad_values
-
-
-def mexican_family(X: torch.Tensor, L_theta_a: torch.Tensor, scale_list: list[float], K: int):
-    """
-    A family of Mexican hat functions with different scales.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (B, D)
-        The input points in D-dimensional space.
-    L_theta_a : torch.Tensor (N, N)
-        The antisymmetric part of the normalized Laplacian operator.
-    scale_list : list[float]
-        A list of scales for the Mexican hat functions.
-
-    Returns:
-    -------
-    f_values : torch.Tensor (K, N)
-        The values of the Mexican hat functions at the input points.
-    Lf_values : torch.Tensor (K, N)
-        The values of the Laplacian applied to the Mexican hat functions at the input points.
-    f_grad_values : torch.Tensor (K, N, D)
-        The gradients of the Mexican hat functions at the input points.
-    K : int
-        The total number of test functions generated. Thus each scale will have K / len(scale_list) test functions.
-    """
-    K_ = K // len(scale_list)  # Number of test functions per scale
-
-    f_values = []
-    Lf_values = []
-    f_grad_values = []
-
-    for scale in scale_list:
-        f_values_radius = torch.zeros((K_, X.shape[0]))
-        Lf_values_radius = torch.zeros((K_, X.shape[0]))
-        f_grad_values_radius = torch.zeros((K_, X.shape[0], X.shape[1]))
-        X.requires_grad_()
-        idx_i = torch.randint(0, X.shape[0], (K_,), device=X.device)
-        for i in range(K_):
-            center = X[idx_i[i]].detach()  # (D,)
-            f_ = scaled_mexican_hat(X, center=center.detach(), scale=scale)  # (N,)
-            f_grad_ = torch.autograd.grad(f_.sum(), X, create_graph=True)[0]  # (N, D)
-
-            f_values_radius[i] = f_
-            f_grad_values_radius[i] = f_grad_
-            Lf_values_radius[i] = L_theta_a @ f_  # (N,)
-
-        f_values.append(f_values_radius.detach())
-        Lf_values.append(Lf_values_radius.detach())
-        f_grad_values.append(f_grad_values_radius.detach())
-
-    f_values = torch.cat(f_values, dim=0)  # (K, N)
-    Lf_values: torch.Tensor = torch.cat(Lf_values, dim=0)  # (K, N)
-    f_grad_values = torch.cat(f_grad_values, dim=0)  # (K, N, D)
-
-    return f_values, Lf_values, f_grad_values
-
-
-##############################
 # Solver analytical
 ##############################
-
-
 def solve_lstsq(
     f_grad_values: torch.Tensor, Lf_values: torch.Tensor, c_km: float
 ) -> torch.Tensor:

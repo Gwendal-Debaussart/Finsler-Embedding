@@ -13,6 +13,7 @@ from finsler_embedding.utils import *
 import logging
 from finsler_embedding.logger import setup_logger, update_log_file
 from finsler_embedding.omega import get_omega, VALID_OMEGA_TYPES
+from finsler_embedding.function_test import prepare_test_functions, VALID_TEST_FUNCTION_TYPES
 
 LOGGER = setup_logger(name=None, log_file=None, level=logging.INFO)
 
@@ -44,6 +45,13 @@ def parse_args():
         help="Type of omega to use: 'round' or 'constant'.",
     )
     parser.add_argument(
+        "--function_type",
+        type=str,
+        default="mexican_and_gaussian",
+        choices=VALID_TEST_FUNCTION_TYPES,
+        help="Type of test functions to use: 'mexican', 'gaussian', 'mexican_and_gaussian', or 'coordinates'.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -73,6 +81,7 @@ class ExperimentConfig:
     K: int = 500
     n_neighbors: int = 10
     omega_type: str = "constant"
+    function_type: str = "mexican_and_gaussian"
     device: str = "cpu"
     export_path: Path = Path("./results") / datetime.now().strftime("%Y%m%d_%H%M%S")
     no_plot: bool = False
@@ -204,34 +213,6 @@ def prepare_operators(
     c_km = -mu_1 / mu_0 * (cfg.m + 1) / cfg.m
     _, L_theta_a = construct_operators(W, epsilon, theta=1)
     return c_km, L_theta_a
-
-
-def prepare_test_functions(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
-    LOGGER.info(
-        "Computing the values of f, Lf, and grad f for the Mexican Hat and Gaussian families..."
-    )
-    f_values_m, Lf_values_m, f_grad_values_m = mexican_family(
-        X, L_theta_a, scale_list=[0.1, 0.2, 0.3, 0.4, 0.5], K=cfg.K // 2
-    )
-    f_values_g, Lf_values_g, f_grad_values_g = gaussian_family(
-        X, L_theta_a, sigma_list=[0.1, 0.2, 0.3, 0.4, 0.5], K=cfg.K // 2
-    )
-
-    f_values = torch.cat([f_values_m, f_values_g], dim=0)
-    Lf_values = torch.cat([Lf_values_m, Lf_values_g], dim=0)
-    f_grad_values = torch.cat([f_grad_values_m, f_grad_values_g], dim=0)
-
-    # Other easier test function
-    # f_values = X[:, 0].unsqueeze(0)  # (1, N)
-    # Lf_values = L_theta_a @ f_values.T  # (N, 1)
-    # Lf_values = Lf_values.T  # (1, N)
-    # f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=cfg.device)  # (1, N, D)
-    # f_grad_values[0, :, 0] = 1.0
-
-    assert torch.all(torch.isfinite(f_grad_values)), "f_grad_values contains NaN or Inf"
-    assert torch.all(torch.isfinite(Lf_values)), "Lf_values contains NaN or Inf"
-    LOGGER.info(f"Computed K = {f_values.shape[0]} test functions and their gradients.")
-    return f_values, Lf_values, f_grad_values
 
 
 def check_constant_function(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
@@ -390,7 +371,11 @@ def main(cfg: ExperimentConfig):
 
     X, bounds, base_cometric, randers_metric, edges, dst_edges = instantiate_setup(cfg)
     c_km, L_theta_a = prepare_operators(cfg, X, edges, dst_edges)
+    LOGGER.info(
+        "Computing the values of f, Lf, and grad f for the Mexican Hat and Gaussian families..."
+    )
     f_values, Lf_values, f_grad_values = prepare_test_functions(cfg, X, L_theta_a)
+    LOGGER.info(f"Computed K = {f_values.shape[0]} test functions and their gradients.")
 
     # Compute the true vector field v_true and the corresponding b_true
     b_true = randers_metric.omega(X) * randers_metric.beta
