@@ -874,7 +874,7 @@ def plot_mf_and_omega(
     return fig, axes
 
 
-def plot_side_by_side(X, b_true, b_hat):
+def plot_side_by_side(X, b_true, b_hat,scale_bhat:float=5.0):
     """
     Plots the true vector field, the estimated vector field, and the error between them side by side.
 
@@ -905,7 +905,7 @@ def plot_side_by_side(X, b_true, b_hat):
         b_hat[:, 0].detach().cpu(),
         b_hat[:, 1].detach().cpu(),
         color="red",
-        scale=5,
+        scale=scale_bhat,
         angles="xy",
         scale_units="xy",
     )

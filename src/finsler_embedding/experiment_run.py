@@ -381,7 +381,7 @@ def main(cfg: ExperimentConfig):
 
     # Compute the true vector field v_true and the corresponding b_true
     b_true = randers_metric.omega(X) * randers_metric.beta
-    v_true = b_to_v(b_true, base_cometric.cometric_tensor(X))
+    v_true = b_to_v(b_true, base_cometric.cometric_tensor(X)).detach()
     true_rhs = c_km * torch.einsum("n d, k n d -> k n", v_true, f_grad_values)
 
     LOGGER.info("Training vector field models...")
