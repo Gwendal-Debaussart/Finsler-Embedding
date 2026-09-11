@@ -1,5 +1,4 @@
 import torch
-from finsler_embedding.experiment_run import ExperimentConfig
 
 VALID_TEST_FUNCTION_TYPES = [
     "mexican",
@@ -7,6 +6,7 @@ VALID_TEST_FUNCTION_TYPES = [
     "mexican_and_gaussian",
     "coordinates",
 ]
+
 
 def bump_function(x: torch.Tensor, center: torch.Tensor, radius: float) -> torch.Tensor:
     """
@@ -231,38 +231,38 @@ def mexican_family(X: torch.Tensor, L_theta_a: torch.Tensor, scale_list: list[fl
     return f_values, Lf_values, f_grad_values
 
 
-def get_mexian_tf(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
+def get_mexian_tf(K: int, X: torch.Tensor, L_theta_a: torch.Tensor):
     f_values_m, Lf_values_m, f_grad_values_m = mexican_family(
         X,
         L_theta_a,
         scale_list=[0.1, 0.2, 0.3, 0.4, 0.5],
-        K=cfg.K,
+        K=K,
     )
     return f_values_m, Lf_values_m, f_grad_values_m
 
 
-def get_gaussian_tf(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
+def get_gaussian_tf(K: int, X: torch.Tensor, L_theta_a: torch.Tensor):
     f_values_g, Lf_values_g, f_grad_values_g = gaussian_family(
         X,
         L_theta_a,
         sigma_list=[0.1, 0.2, 0.3, 0.4, 0.5],
-        K=cfg.K,
+        K=K,
     )
     return f_values_g, Lf_values_g, f_grad_values_g
 
 
-def mexican_and_gaussian_tf(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
+def mexican_and_gaussian_tf(K: int, X: torch.Tensor, L_theta_a: torch.Tensor):
     f_values_m, Lf_values_m, f_grad_values_m = mexican_family(
         X,
         L_theta_a,
         scale_list=[0.1, 0.2, 0.3, 0.4, 0.5],
-        K=cfg.K // 2,
+        K=K // 2,
     )
     f_values_g, Lf_values_g, f_grad_values_g = gaussian_family(
         X,
         L_theta_a,
         sigma_list=[0.1, 0.2, 0.3, 0.4, 0.5],
-        K=cfg.K // 2,
+        K=K // 2,
     )
 
     f_values = torch.cat([f_values_m, f_values_g], dim=0)
@@ -272,29 +272,29 @@ def mexican_and_gaussian_tf(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: t
     return f_values, Lf_values, f_grad_values
 
 
-def coordinates_tf(
-    cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor, coord: int = 0
-):
+def coordinates_tf(X: torch.Tensor, L_theta_a: torch.Tensor, coord: int = 0):
     f_values = X[:, coord].unsqueeze(0)  # (1, N)
     Lf_values = L_theta_a @ f_values.T  # (N, 1)
     Lf_values = Lf_values.T  # (1, N)
-    f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=cfg.device)  # (1, N, D)
+    f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=X.device)  # (1, N, D)
     f_grad_values[0, :, coord] = 1.0
 
     return f_values, Lf_values, f_grad_values
 
 
-def prepare_test_functions(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
-    if cfg.test_function_type == "mexican":
-        f_values, Lf_values, f_grad_values = get_mexian_tf(cfg, X, L_theta_a)
-    elif cfg.test_function_type == "gaussian":
-        f_values, Lf_values, f_grad_values = get_gaussian_tf(cfg, X, L_theta_a)
-    elif cfg.test_function_type == "mexican_and_gaussian":
-        f_values, Lf_values, f_grad_values = mexican_and_gaussian_tf(cfg, X, L_theta_a)
-    elif cfg.test_function_type == "coordinates":
-        f_values, Lf_values, f_grad_values = coordinates_tf(cfg, X, L_theta_a)
+def prepare_test_functions(
+    K: int, function_type: str, X: torch.Tensor, L_theta_a: torch.Tensor
+):
+    if function_type == "mexican":
+        f_values, Lf_values, f_grad_values = get_mexian_tf(K, X, L_theta_a)
+    elif function_type == "gaussian":
+        f_values, Lf_values, f_grad_values = get_gaussian_tf(K, X, L_theta_a)
+    elif function_type == "mexican_and_gaussian":
+        f_values, Lf_values, f_grad_values = mexican_and_gaussian_tf(K, X, L_theta_a)
+    elif function_type == "coordinates":
+        f_values, Lf_values, f_grad_values = coordinates_tf(X, L_theta_a)
     else:
-        raise ValueError(f"Unknown test function type: {cfg.test_function_type}")
+        raise ValueError(f"Unknown test function type: {function_type}")
 
     assert torch.all(torch.isfinite(f_grad_values)), "f_grad_values contains NaN or Inf"
     assert torch.all(torch.isfinite(Lf_values)), "Lf_values contains NaN or Inf"

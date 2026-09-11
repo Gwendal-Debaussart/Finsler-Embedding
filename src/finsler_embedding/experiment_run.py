@@ -374,7 +374,9 @@ def main(cfg: ExperimentConfig):
     LOGGER.info(
         "Computing the values of f, Lf, and grad f for the Mexican Hat and Gaussian families..."
     )
-    f_values, Lf_values, f_grad_values = prepare_test_functions(cfg, X, L_theta_a)
+    f_values, Lf_values, f_grad_values = prepare_test_functions(
+        cfg.K, cfg.function_type, X, L_theta_a
+    )
     LOGGER.info(f"Computed K = {f_values.shape[0]} test functions and their gradients.")
 
     # Compute the true vector field v_true and the corresponding b_true
