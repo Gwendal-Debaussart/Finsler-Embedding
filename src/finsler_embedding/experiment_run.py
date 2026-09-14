@@ -204,14 +204,20 @@ def instantiate_setup(cfg: ExperimentConfig):
 
 
 def prepare_operators(
-    cfg: ExperimentConfig, X: torch.Tensor, edges: torch.Tensor, dst_edges: torch.Tensor
+    cfg: ExperimentConfig,
+    X: torch.Tensor,
+    edges: torch.Tensor,
+    dst_edges: torch.Tensor,
+    epsilon_scale: float = 10.0,
 ):
     LOGGER.info("Computing epsilon, W, mu_0, mu_1, and operators L_theta_s and L_theta_a...")
-    epsilon = compute_epsilon_empirical(X) * 10
+    epsilon = compute_epsilon_empirical(X) * epsilon_scale
+    LOGGER.info(f"Computed epsilon = {epsilon:.4e}")
     W, mu_0, mu_1 = gaussian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
     # W, mu_0, mu_1 = laplacian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
     c_km = -mu_1 / mu_0 * (cfg.m + 1) / cfg.m
     _, L_theta_a = construct_operators(W, epsilon, theta=1)
+    assert L_theta_a.isfinite().all(), "L_theta_a contains NaN or Inf values."
     return c_km, L_theta_a
 
 
