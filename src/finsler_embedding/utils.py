@@ -874,7 +874,7 @@ def plot_mf_and_omega(
     return fig, axes
 
 
-def plot_side_by_side(X, b_true, b_hat,scale_bhat:float=5.0):
+def plot_side_by_side(X, b_true, b_hat, scale_bhat: float = 5.0, skip: int = 2):
     """
     Plots the true vector field, the estimated vector field, and the error between them side by side.
 
@@ -886,13 +886,17 @@ def plot_side_by_side(X, b_true, b_hat,scale_bhat:float=5.0):
         The true vector field values at the input points.
     b_hat : torch.Tensor (N, 2)
         The estimated vector field values at the input points.
+    scale_bhat : float
+        The scale factor for the quiver plot of the estimated vector field. Default is 5.0.
+    skip : int
+        The step size for plotting the quiver arrows. Default is 2, meaning every second point will be plotted to reduce clutter.
     """
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     axes[0].quiver(
-        X[:, 0].detach().cpu(),
-        X[:, 1].detach().cpu(),
-        b_true[:, 0].detach().cpu(),
-        b_true[:, 1].detach().cpu(),
+        X[::skip, 0].detach().cpu(),
+        X[::skip, 1].detach().cpu(),
+        b_true[::skip, 0].detach().cpu(),
+        b_true[::skip, 1].detach().cpu(),
         color="blue",
         scale=5,
         angles="xy",
@@ -900,10 +904,10 @@ def plot_side_by_side(X, b_true, b_hat,scale_bhat:float=5.0):
     )
     axes[0].set_title("True b vector field")
     axes[1].quiver(
-        X[:, 0].detach().cpu(),
-        X[:, 1].detach().cpu(),
-        b_hat[:, 0].detach().cpu(),
-        b_hat[:, 1].detach().cpu(),
+        X[::skip, 0].detach().cpu(),
+        X[::skip, 1].detach().cpu(),
+        b_hat[::skip, 0].detach().cpu(),
+        b_hat[::skip, 1].detach().cpu(),
         color="red",
         scale=scale_bhat,
         angles="xy",
@@ -911,10 +915,10 @@ def plot_side_by_side(X, b_true, b_hat,scale_bhat:float=5.0):
     )
     axes[1].set_title("Estimated b vector field")
     axes[2].quiver(
-        X[:, 0].detach().cpu(),
-        X[:, 1].detach().cpu(),
-        (b_true - b_hat)[:, 0].detach().cpu(),
-        (b_true - b_hat)[:, 1].detach().cpu(),
+        X[::skip, 0].detach().cpu(),
+        X[::skip, 1].detach().cpu(),
+        (b_true - b_hat)[::skip, 0].detach().cpu(),
+        (b_true - b_hat)[::skip, 1].detach().cpu(),
         color="green",
         scale=5,
         angles="xy",
