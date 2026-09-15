@@ -272,12 +272,152 @@ def mexican_and_gaussian_tf(K: int, X: torch.Tensor, L_theta_a: torch.Tensor):
     return f_values, Lf_values, f_grad_values
 
 
-def coordinates_tf(X: torch.Tensor, L_theta_a: torch.Tensor, coord: int = 0):
+def coordinates_base(X: torch.Tensor, L_theta_a: torch.Tensor, coord: int = 0):
+    """
+    Base function for coordinate-based test functions.
+    f_k(x) = x_k, where k is the coordinate index.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points in D-dimensional space.
+    L_theta_a : torch.Tensor (N, N)
+        The antisymmetric part of the normalized Laplacian operator.
+    coord : int
+        The coordinate index to use for the test function.
+
+    Returns:
+    -------
+    f_values : torch.Tensor (1, N)
+        The values of the coordinate function at the input points.
+    Lf_values : torch.Tensor (1, N)
+        The values of the Laplacian applied to the coordinate function at the input points.
+    f_grad_values : torch.Tensor (1, N, D)
+        The gradients of the coordinate function at the input points.
+    """
     f_values = X[:, coord].unsqueeze(0)  # (1, N)
     Lf_values = L_theta_a @ f_values.T  # (N, 1)
     Lf_values = Lf_values.T  # (1, N)
     f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=X.device)  # (1, N, D)
     f_grad_values[0, :, coord] = 1.0
+
+    return f_values, Lf_values, f_grad_values
+
+
+def coordinates_tf(X: torch.Tensor, L_theta_a: torch.Tensor):
+    f_values_list = []
+    Lf_values_list = []
+    f_grad_values_list = []
+
+    for coord in range(X.shape[1]):
+        f_values, Lf_values, f_grad_values = coordinates_base(X, L_theta_a, coord)
+        f_values_list.append(f_values)
+        Lf_values_list.append(Lf_values)
+        f_grad_values_list.append(f_grad_values)
+
+    f_values = torch.cat(f_values_list, dim=0)  # (D, N)
+    Lf_values = torch.cat(Lf_values_list, dim=0)  # (D, N)
+    f_grad_values = torch.cat(f_grad_values_list, dim=0)  # (D, N, D)
+
+    return f_values, Lf_values, f_grad_values
+
+
+def square_coordinates(X: torch.Tensor, L_theta_a: torch.Tensor, coord: int):
+    """
+    Base function for coordinate-based test functions.
+    f_k(x) = 0.5 * x_k^2, where k is the coordinate index.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points in D-dimensional space.
+    L_theta_a : torch.Tensor (N, N)
+        The antisymmetric part of the normalized Laplacian operator.
+    coord : int
+        The coordinate index to use for the test function.
+
+    Returns:
+    -------
+    f_values : torch.Tensor (1, N)
+        The values of the coordinate function at the input points.
+    Lf_values : torch.Tensor (1, N)
+        The values of the Laplacian applied to the coordinate function at the input points.
+    f_grad_values : torch.Tensor (1, N, D)
+        The gradients of the coordinate function at the input points.
+    """
+    f_values = X[:, coord].unsqueeze(0).pow(2.0)  # (1, N)
+    Lf_values = L_theta_a @ f_values.T  # (N, 1)
+    Lf_values = Lf_values.T  # (1, N)
+    f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=X.device)  # (1, N, D)
+    f_grad_values[0, :, coord] = X[:, coord]
+
+    return f_values, Lf_values, f_grad_values
+
+
+def square_coordinates_tf(X: torch.Tensor, L_theta_a: torch.Tensor):
+    f_values_list = []
+    Lf_values_list = []
+    f_grad_values_list = []
+
+    for coord in range(X.shape[1]):
+        f_values, Lf_values, f_grad_values = square_coordinates(X, L_theta_a, coord)
+        f_values_list.append(f_values)
+        Lf_values_list.append(Lf_values)
+        f_grad_values_list.append(f_grad_values)
+
+    f_values = torch.cat(f_values_list, dim=0)  # (D, N)
+    Lf_values = torch.cat(Lf_values_list, dim=0)  # (D, N)
+    f_grad_values = torch.cat(f_grad_values_list, dim=0)  # (D, N, D)
+
+    return f_values, Lf_values, f_grad_values
+
+
+def lin_square_coordinates(X: torch.Tensor, L_theta_a: torch.Tensor, coord: int):
+    """
+    Base function for coordinate-based test functions.
+    f_k(x) = 0.5 * x_k^2 + x_k, where k is the coordinate index.
+
+    Parameters:
+    ----------
+    X : torch.Tensor (N, D)
+        The input points in D-dimensional space.
+    L_theta_a : torch.Tensor (N, N)
+        The antisymmetric part of the normalized Laplacian operator.
+    coord : int
+        The coordinate index to use for the test function.
+
+    Returns:
+    -------
+    f_values : torch.Tensor (1, N)
+        The values of the coordinate function at the input points.
+    Lf_values : torch.Tensor (1, N)
+        The values of the Laplacian applied to the coordinate function at the input points.
+    f_grad_values : torch.Tensor (1, N, D)
+        The gradients of the coordinate function at the input points.
+    """
+    f_values = X[:, coord].unsqueeze(0).pow(2.0) + X[:, coord].unsqueeze(0)  # (1, N)
+    Lf_values = L_theta_a @ f_values.T  # (N, 1)
+    Lf_values = Lf_values.T  # (1, N)
+    f_grad_values = torch.zeros((1, X.shape[0], X.shape[1]), device=X.device)  # (1, N, D)
+    f_grad_values[0, :, coord] = X[:, coord] + 1.0
+
+    return f_values, Lf_values, f_grad_values
+
+
+def lin_square_coordinates_tf(X: torch.Tensor, L_theta_a: torch.Tensor):
+    f_values_list = []
+    Lf_values_list = []
+    f_grad_values_list = []
+
+    for coord in range(X.shape[1]):
+        f_values, Lf_values, f_grad_values = lin_square_coordinates(X, L_theta_a, coord)
+        f_values_list.append(f_values)
+        Lf_values_list.append(Lf_values)
+        f_grad_values_list.append(f_grad_values)
+
+    f_values = torch.cat(f_values_list, dim=0)  # (D, N)
+    Lf_values = torch.cat(Lf_values_list, dim=0)  # (D, N)
+    f_grad_values = torch.cat(f_grad_values_list, dim=0)  # (D, N, D)
 
     return f_values, Lf_values, f_grad_values
 
@@ -293,6 +433,10 @@ def prepare_test_functions(
         f_values, Lf_values, f_grad_values = mexican_and_gaussian_tf(K, X, L_theta_a)
     elif function_type == "coordinates":
         f_values, Lf_values, f_grad_values = coordinates_tf(X, L_theta_a)
+    elif function_type == "square_coordinates":
+        f_values, Lf_values, f_grad_values = square_coordinates_tf(X, L_theta_a)
+    elif function_type == "lin_square_coordinates":
+        f_values, Lf_values, f_grad_values = lin_square_coordinates_tf(X, L_theta_a)
     else:
         raise ValueError(f"Unknown test function type: {function_type}")
 
