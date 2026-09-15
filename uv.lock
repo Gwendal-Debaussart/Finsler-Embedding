@@ -317,6 +317,7 @@ dependencies = [
     { name = "geodesic-toolbox" },
     { name = "ipykernel" },
     { name = "matplotlib" },
+    { name = "networkx" },
     { name = "pandas" },
     { name = "seaborn" },
 ]
@@ -326,6 +327,7 @@ requires-dist = [
     { name = "geodesic-toolbox", editable = "/home/tblanchard/phd/geodesic_toolbox" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "matplotlib", specifier = ">=3.11.1" },
+    { name = "networkx", specifier = ">=3.6.1" },
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "seaborn", specifier = ">=0.13.2" },
 ]

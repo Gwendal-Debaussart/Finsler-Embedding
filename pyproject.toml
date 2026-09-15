@@ -12,6 +12,7 @@ dependencies = [
     "geodesic-toolbox>=0.1.0",
     "ipykernel>=7.3.0",
     "matplotlib>=3.11.1",
+    "networkx>=3.6.1",
     "pandas>=3.0.5",
     "seaborn>=0.13.2",
 ]
