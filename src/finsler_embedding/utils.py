@@ -103,257 +103,6 @@ def get_K(dst_mat, epsilon):
     return K
 
 
-def loss_function_omega(
-    z_low: torch.Tensor,
-    beta_hat: torch.Tensor,
-    omega_hat: torch.nn.Module,
-    edges: torch.Tensor,
-    criterion: torch.nn.Module = torch.nn.MSELoss(),
-) -> torch.Tensor:
-    """
-    Compares the values of beta_hat with the inner product of omega_hat(z_i) and the difference z_j - z_i for all edges (i,j)
-    using the provided loss criterion.
-
-    Parameters:
-    -----------
-    z_low : torch.Tensor (N, D)
-        The low-dimensional embeddings of the data points.
-    beta_hat : torch.Tensor (N, N)
-        The estimated beta values for each pair of points.
-    omega_hat : torch.nn.Module
-        A function that takes a tensor of shape (N, D) and returns a tensor of shape (N, D), representing the estimated omega values for each point.
-    edges : torch.Tensor (M, 2)
-        The indices of the edges in the graph.
-    criterion : torch.nn.Module
-        The loss function to use for computing the loss.
-
-    Returns:
-    --------
-    loss : torch.Tensor
-        The computed loss value.
-    """
-    beta_values = beta_hat[edges[:, 0], edges[:, 1]]  # (M,)
-
-    z_i = z_low[edges[:, 0]]
-    z_j = z_low[edges[:, 1]]
-    omega_hat_i = omega_hat(z_i)  # (M, D)
-    dz = z_j - z_i  # (M, D)
-
-    logits = torch.einsum("bi,bi->b", omega_hat_i, dz)  # (M,)
-    loss = criterion(logits, beta_values)
-    return loss
-
-
-class OmegaModel(torch.nn.Module):
-    """Simple MLP based model to learn the omega vector field from the low-dimensional embeddings."""
-
-    def __init__(self, latent_dim: int, hidden_dims: list[int]):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.hidden_dims = hidden_dims
-
-        layers = []
-        input_dim = latent_dim
-        for h_dim in hidden_dims:
-            layers.append(torch.nn.Linear(input_dim, h_dim))
-            layers.append(torch.nn.GELU())
-            input_dim = h_dim
-        layers.append(torch.nn.Linear(input_dim, latent_dim))
-        # layers.append(torch.nn.Sigmoid())
-        self.model = torch.nn.Sequential(*layers)
-
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        return self.model(z)
-
-
-def learn_omega(
-    z_low: torch.Tensor,
-    beta_hat: torch.Tensor,
-    edges: torch.Tensor,
-    omega_hat: torch.nn.Module,
-    lr: float = 1e-2,
-    n_iter: int = 1000,
-) -> list[float]:
-    """
-    Function to learn the omega_hat model by minimizing the loss between beta_hat and the inner product of omega_hat(z_i) and (z_j - z_i) for all edges (i,j).
-
-    Parameters:
-    -----------
-    z_low : torch.Tensor (N, D)
-        The low-dimensional embeddings of the data points.
-    beta_hat : torch.Tensor (N, N)
-        The estimated beta values for each pair of points.
-    edges : torch.Tensor (M, 2)
-        The indices of the edges in the graph.
-    omega_hat : torch.nn.Module
-        A function that takes a tensor of shape (N, D) and returns a tensor of shape (N, D), representing the estimated omega values for each point.
-    lr : float
-        The learning rate for the optimizer.
-    n_iter : int
-        The number of iterations for the optimization process.
-
-    Returns:
-    --------
-    losses : list[float]
-        A list containing the loss values at each iteration of the optimization process.
-    """
-    loss_0 = loss_function_omega(z_low, beta_hat, omega_hat, edges)
-
-    optim = torch.optim.Adam(omega_hat.parameters(), lr=lr)
-
-    losses = [loss_0.item()]
-    pbar = tqdm(range(n_iter), desc="Learning omega_hat")
-    for i in pbar:
-        optim.zero_grad()
-        loss = loss_function_omega(z_low, beta_hat, omega_hat, edges)
-        loss.backward()
-        optim.step()
-        losses.append(loss.item())
-        pbar.set_postfix(loss=loss.item())
-    return losses
-
-
-class CometricHat(CoMetric):
-    """Simple MLP based model to learn the cometric matrix from the low-dimensional embeddings."""
-
-    def __init__(self, latent_dim: int, hidden_dims: list[int]):
-        super().__init__(is_diag=True)
-        self.latent_dim = latent_dim
-        self.hidden_dims = hidden_dims
-
-        # Assume a diagonal cometric matrix
-        layers = []
-        input_dim = latent_dim
-        for h_dim in hidden_dims:
-            layers.append(torch.nn.Linear(input_dim, h_dim))
-            layers.append(torch.nn.GELU())
-            input_dim = h_dim
-        layers.append(torch.nn.Linear(input_dim, latent_dim))
-        layers.append(torch.nn.Softplus())  # Ensure positivity
-        self.model = torch.nn.Sequential(*layers)
-
-    def metric_tensor(self, z):
-        # Return the diagonal of the cometric matrix
-        diag = self.model(z)
-        return diag
-
-    def forward(self, z):
-        return 1 / self.metric_tensor(z)  # Return the diagonal of the metric matrix
-
-
-# class CometricHat(CoMetric):
-# Same as above but we work in the log space to ensure positivity of the cometric matrix
-#     def __init__(self, latent_dim:int,hidden_dims:list[int]):
-#         super().__init__(is_diag=True)
-#         self.latent_dim = latent_dim
-#         self.hidden_dims = hidden_dims
-
-#         # Assume a diagonal cometric matrix
-#         # The be PSD we work in the log space
-#         layers = []
-#         input_dim = latent_dim
-#         for h_dim in hidden_dims:
-#             layers.append(torch.nn.Linear(input_dim, h_dim))
-#             layers.append(torch.nn.GELU())
-#             input_dim = h_dim
-#         # Assume
-#         layers.append(torch.nn.Linear(input_dim, latent_dim))
-#         self.model = torch.nn.Sequential(*layers)
-
-#     def metric_tensor(self, z):
-#         # Return the diagonal of the cometric matrix
-#         diag = self.model(z)
-#         diag = torch.exp(diag)  # Ensure positivity
-#         return diag
-
-#     def forward(self, z):
-#         return 1 / self.metric_tensor(z)  # Return the diagonal of the metric matrix
-
-
-def loss_function_alpha(
-    z_low: torch.Tensor,
-    alpha_hat: torch.Tensor,
-    alpha_model: CoMetric,
-    edges: torch.Tensor,
-    criterion: torch.nn.Module = torch.nn.MSELoss(),
-) -> torch.Tensor:
-    """
-    Compares the values of alpha_hat with the Riemannian norm of the difference z_j - z_i under the cometric defined by alpha_model for all edges (i,j)
-
-    Parameters:
-    -----------
-    z_low : torch.Tensor (N, D)
-        The low-dimensional embeddings of the data points.
-    alpha_hat : torch.Tensor (N, N)
-        The estimated alpha values for each pair of points.
-    alpha_model : CoMetric
-        A function that takes a tensor of shape (N, D) and returns a tensor of shape (N, D), representing the estimated cometric values for each point.
-    edges : torch.Tensor (M, 2)
-        The indices of the edges in the graph.
-    criterion : torch.nn.Module
-        The loss function to use for computing the loss.
-
-    Returns:
-    --------
-    loss : torch.Tensor
-        The computed loss value.
-    """
-    z_i = z_low[edges[:, 0]]
-    z_j = z_low[edges[:, 1]]
-    alpha_values = alpha_hat[edges[:, 0], edges[:, 1]]  # (M,)
-
-    dz = z_j - z_i
-    alpha_values_hat = alpha_model.metric(z_i, dz)  # (M,)
-    return criterion(alpha_values_hat, alpha_values)
-
-
-def learn_alpha(
-    z_low: torch.Tensor,
-    alpha_hat: torch.Tensor,
-    edges: torch.Tensor,
-    alpha_model: torch.nn.Module,
-    lr: float = 1e-2,
-    n_iter: int = 1000,
-) -> list[float]:
-    """
-    Function to learn the alpha_model by minimizing the loss between alpha_hat and the Riemannian norm of the difference z_j - z_i under the cometric defined by alpha_model for all edges (i,j).
-
-    Parameters:
-    -----------
-    z_low : torch.Tensor (N, D)
-        The low-dimensional embeddings of the data points.
-    alpha_hat : torch.Tensor (N, N)
-        The estimated alpha values for each pair of points.
-    edges : torch.Tensor (M, 2)
-        The indices of the edges in the graph.
-    alpha_model : torch.nn.Module
-        A function that takes a tensor of shape (N, D) and returns a tensor of shape (N, D), representing the estimated cometric values for each point.
-    lr : float
-        The learning rate for the optimizer.
-    n_iter : int
-        The number of iterations for the optimization process.
-
-    Returns:
-    --------
-    losses : list[float]
-        A list containing the loss values at each iteration of the optimization process.
-    """
-    loss_0 = loss_function_alpha(z_low, alpha_hat, alpha_model, edges)
-
-    optim = torch.optim.Adam(alpha_model.parameters(), lr=lr)
-
-    losses = [loss_0.item()]
-    pbar = tqdm(range(n_iter), desc="Learning alpha_hat")
-    for i in pbar:
-        optim.zero_grad()
-        loss = loss_function_alpha(z_low, alpha_hat, alpha_model, edges)
-        loss.backward()
-        optim.step()
-        losses.append(loss.item())
-        pbar.set_postfix(loss=loss.item())
-    return losses
-
-
 def local_poly_gradient(
     x: torch.Tensor, X: torch.Tensor, f0: torch.Tensor, F: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -424,47 +173,6 @@ def local_poly_gradient(
     hess[:, :, ij[1], ij[0]] = hess[:, :, ij[0], ij[1]]  # Symmetrize the Hess
 
     return grad, hess
-
-
-def reconstruction_loss(
-    X_i: torch.Tensor,
-    phi_i: torch.Tensor,
-    lambda_k: torch.Tensor,
-    grad_phi_i: torch.Tensor,
-    randers: RandersMetrics,
-    mu_0: float,
-    mu_1: float,
-) -> torch.Tensor:
-    """
-    Computes the reconstruction loss from the paper.
-
-    Parameters:
-    ----------
-    X_i : torch.Tensor (B, M)
-        The input points for which we want to compute the loss.
-    phi_i : torch.Tensor (B, K)
-        The eigenvectors for the input points.
-    lambda_k : torch.Tensor (K,)
-        The eigenvalues for the eigenvectors.
-    grad_phi_i : torch.Tensor (B, K, M)
-        The gradient of the eigenvectors with respect to the input points.
-        grad_phi_i[b, k, d] = ∂phi_k / ∂x_d at point X_i[b].
-    randers : RandersMetrics
-        The Randers metric object.
-    mu_0 : float
-        The first moment of the kernel.
-    mu_1 : float
-        The second moment of the kernel.
-    """
-    b_x = randers.omega(X_i) * randers.beta
-    m = X_i.shape[1]
-    cst = mu_1 / mu_0 * (m + 1) / m
-    cst /= 1 + randers.base_cometric.dual_energy(X_i, b_x)
-    La = -cst[:, None] * torch.einsum("bkd,bd->bk", grad_phi_i, b_x.to(grad_phi_i.dtype))
-    loss = lambda_k[None, :] * phi_i - La.to(phi_i.dtype)
-    # loss = loss.pow(2).mean()
-    loss = loss.abs().pow(2).mean()
-    return loss
 
 
 @torch.no_grad()
@@ -570,7 +278,7 @@ def distance_matrix_straight_line(
     edges: torch.Tensor,
     randers: RandersMetrics,
     batch_size: int = 100,
-    num_quad_points: int = 100,
+    num_quad_points: int = 10,
 ) -> torch.Tensor:
     """
     Compute Randers distances along straight-line segments for graph edges.
@@ -693,7 +401,7 @@ def compute_epsilon_rate(N: int, m: int) -> float:
     return (np.log(N) / N) ** (1 / m + 4)
 
 
-def compute_epsilon_empirical(X: torch.Tensor) -> float:
+def compute_epsilon_nn(X: torch.Tensor) -> float:
     """
     Compute the bandwidth parameter as the min max distance between points in the dataset X.
 
@@ -717,6 +425,25 @@ def compute_epsilon_empirical(X: torch.Tensor) -> float:
     nn_dist = sorted_dst[:, rank]  # (K,)
     nn_scale2 = nn_dist.pow(2).clamp_min(eps)
     return nn_scale2.mean().item()
+
+
+def compute_epsilon_empirical(dst_edges: torch.Tensor, scale: float = 1.0) -> float:
+    """
+    Compute the bandwidth parameter as the standard deviation of the distances in dst_edges.
+
+    Parameters:
+    ----------
+    dst_edges : torch.Tensor (M,)
+        The distances between points in the dataset.
+    scale : float
+        A scaling factor to adjust the computed bandwidth. (default is 1.0)
+
+    Returns:
+    -------
+    epsilon : float
+        The computed bandwidth parameter.
+    """
+    return dst_edges.std().item() * scale
 
 
 def laplacian_kernel(
@@ -874,7 +601,9 @@ def plot_mf_and_omega(
     return fig, axes
 
 
-def plot_side_by_side(X, b_true, b_hat, scale_bhat: float = 5.0, skip: int = 2):
+def plot_side_by_side(
+    X, b_true, b_hat, scale_b: float = 5.0, scale_bhat: float = 5.0, skip: int = 2
+):
     """
     Plots the true vector field, the estimated vector field, and the error between them side by side.
 
@@ -898,7 +627,7 @@ def plot_side_by_side(X, b_true, b_hat, scale_bhat: float = 5.0, skip: int = 2):
         b_true[::skip, 0].detach().cpu(),
         b_true[::skip, 1].detach().cpu(),
         color="blue",
-        scale=5,
+        scale=scale_b,
         angles="xy",
         scale_units="xy",
     )

@@ -148,19 +148,19 @@ def export_results(cfg: ExperimentConfig, results: dict[str, dict]):
 
 
 def train_vector_field_models(
-    cfg: ExperimentConfig,
     X: torch.Tensor,
     base_cometric: CoMetric,
     c_km: torch.Tensor,
     f_values: torch.Tensor,
     Lf_values: torch.Tensor,
     f_grad_values: torch.Tensor,
+    device: str = "cpu",
+    m: int = 2,
+    n_epochs: int = 1000,
 ) -> tuple[torch.nn.Module, torch.nn.Module, list[float]]:
-    v_model = V_estimator(hidden_dims=[64, 64], dim=2).to(cfg.device)
-    omega_model = OmegaFromV(v_estimator=v_model, cometric=base_cometric).to(cfg.device)
-    loss_list = learn_v(
-        X, f_values, Lf_values, f_grad_values, c_km, v_model, device=cfg.device
-    )
+    v_model = V_estimator(hidden_dims=[64, 64], dim=m).to(device)
+    omega_model = OmegaFromV(v_estimator=v_model, cometric=base_cometric).to(device)
+    loss_list = learn_v(X, f_values, Lf_values, f_grad_values, c_km, v_model, device=device, n_epochs=n_epochs)
     return v_model, omega_model, loss_list
 
 
@@ -205,20 +205,25 @@ def instantiate_setup(cfg: ExperimentConfig):
 
 def prepare_operators(
     cfg: ExperimentConfig,
-    X: torch.Tensor,
     edges: torch.Tensor,
     dst_edges: torch.Tensor,
-    epsilon_scale: float = 10.0,
+    epsilon: float,
+    operator_type: str = "gaussian",
 ):
-    LOGGER.info("Computing epsilon, W, mu_0, mu_1, and operators L_theta_s and L_theta_a...")
-    epsilon = compute_epsilon_empirical(X) * epsilon_scale
-    LOGGER.info(f"Computed epsilon = {epsilon:.4e}")
-    W, mu_0, mu_1 = gaussian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
-    # W, mu_0, mu_1 = laplacian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
+    LOGGER.info("Computing W, mu_0, mu_1, and operators L_theta_s and L_theta_a...")
+    if operator_type == "gaussian":
+        W, mu_0, mu_1 = gaussian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
+    elif operator_type == "laplacian":
+        W, mu_0, mu_1 = laplacian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
+    else:
+        raise ValueError(
+            f"Unknown operator_type: {operator_type}. Must be 'gaussian' or 'laplacian'."
+        )
     c_km = -mu_1 / mu_0 * (cfg.m + 1) / cfg.m
-    _, L_theta_a = construct_operators(W, epsilon, theta=1)
+    L_theta_s, L_theta_a = construct_operators(W, epsilon, theta=1)
     assert L_theta_a.isfinite().all(), "L_theta_a contains NaN or Inf values."
-    return c_km, L_theta_a
+    assert L_theta_s.isfinite().all(), "L_theta_s contains NaN or Inf values."
+    return c_km, L_theta_s, L_theta_a
 
 
 def check_constant_function(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
