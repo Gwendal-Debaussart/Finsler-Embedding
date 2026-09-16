@@ -279,6 +279,7 @@ def distance_matrix_straight_line(
     randers: RandersMetrics,
     batch_size: int = 100,
     num_quad_points: int = 10,
+    pbar: bool = True,
 ) -> torch.Tensor:
     """
     Compute Randers distances along straight-line segments for graph edges.
@@ -291,9 +292,12 @@ def distance_matrix_straight_line(
 
     t = torch.linspace(0.0, 1.0, num_quad_points, device=X.device, dtype=X.dtype)
 
-    for start in tqdm(
-        range(0, edges.shape[0], batch_size), desc="Computing Randers distances"
-    ):
+    if pbar:
+        pbar_ = tqdm(range(0, edges.shape[0], batch_size), desc="Computing Randers distances")
+    else:
+        pbar_ = range(0, edges.shape[0], batch_size)
+
+    for start in pbar_:
         batch_edges = edges[start : start + batch_size]
         x0 = X[batch_edges[:, 0]]
         x1 = X[batch_edges[:, 1]]
@@ -314,6 +318,7 @@ def georce_distance_matrix(
     edges: torch.Tensor,
     randers: RandersMetrics,
     batch_size: int = 100,
+    pbar: bool = True,
 ) -> torch.Tensor:
     """
     Compute the geodesic distance matrix for a set of edges and a Randers metric.
@@ -336,9 +341,11 @@ def georce_distance_matrix(
     """
     dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
     solver = GEORCEFinsler(finsler=randers, T=25, max_iter=20)
-    for start in tqdm(
-        range(0, edges.shape[0], batch_size), desc="Computing Randers distances"
-    ):
+    if pbar:
+        pbar_ = tqdm(range(0, edges.shape[0], batch_size), desc="Computing Randers distances")
+    else:
+        pbar_ = range(0, edges.shape[0], batch_size)
+    for start in pbar_:
         batch_edges = edges[start : start + batch_size]
         x0 = X[batch_edges[:, 0]]
         x1 = X[batch_edges[:, 1]]
@@ -353,6 +360,7 @@ def construct_distance_matrix(
     randers: RandersMetrics,
     batch_size: int = 100,
     use_approx: bool = True,
+    pbar: bool = True,
 ) -> torch.Tensor:
     """Construct a distance matrix from a set of edges and a Randers metric.
 
@@ -374,9 +382,11 @@ def construct_distance_matrix(
         The constructed distance matrix.
     """
     if use_approx:
-        dst_mat = distance_matrix_straight_line(X, edges, randers, batch_size=batch_size)
+        dst_mat = distance_matrix_straight_line(
+            X, edges, randers, batch_size=batch_size, pbar=pbar
+        )
     else:
-        dst_mat = georce_distance_matrix(X, edges, randers, batch_size=batch_size)
+        dst_mat = georce_distance_matrix(X, edges, randers, batch_size=batch_size, pbar=pbar)
     return dst_mat
 
 
@@ -760,12 +770,16 @@ def learn_v(
     device: torch.device = torch.device("cpu"),
     b_size: int = 128,
     n_epochs: int = 1000,
+    pbar: bool = True,
 ) -> list[float]:
     optim = torch.optim.Adam(v_model.parameters(), lr=1e-3)
 
     loss_list = []
-    pbar = tqdm(range(n_epochs), desc="Learning v")
-    for epoch in pbar:
+    if pbar:
+        pbar_ = tqdm(range(n_epochs), desc="Learning v")
+    else:
+        pbar_ = range(n_epochs)
+    for epoch in pbar_:
         idx_i = torch.randint(0, X.shape[0], (b_size,), device=device)
         if epoch == 0:
             idx_k = torch.arange(0, f_values.shape[0] - 1, device=device)
@@ -783,5 +797,6 @@ def learn_v(
         optim.step()
         loss_list.append(loss.item())
 
-        pbar.set_description(f"Loss: {loss.item():.4e}")
+        if pbar:
+            pbar_.set_description(f"Loss: {loss.item():.4e}")
     return loss_list

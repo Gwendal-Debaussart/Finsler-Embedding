@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--function_type",
         type=str,
-        default="mexican_and_gaussian",
+        default="mexican",
         choices=VALID_TEST_FUNCTION_TYPES,
         help="Type of test functions to use: 'mexican', 'gaussian', 'mexican_and_gaussian', or 'coordinates'.",
     )
@@ -69,6 +69,18 @@ def parse_args():
         action="store_true",
         help="If set, do not generate plots.",
     )
+    parser.add_argument(
+        "--n_epochs",
+        type=int,
+        default=1000,
+        help="Number of epochs for training the vector field model.",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help="Epsilon parameter for the kernel. If None, it will be computed empirically.",
+    )
     args = parser.parse_args()
     return args
 
@@ -85,18 +97,32 @@ class ExperimentConfig:
     device: str = "cpu"
     export_path: Path = Path("./results") / datetime.now().strftime("%Y%m%d_%H%M%S")
     no_plot: bool = False
+    n_epochs: int = 1000
+    epsilon: float = None
 
 
-def sample_uniform(
-    n_samples: int, bounds: tuple = (-2, 2, -2, 2), device: str = "cpu"
+def sample_uniform2D(
+    n_samples: int, bounds: list[list[float]] = [[-1, 1], [-1, 1]]
 ) -> torch.Tensor:
     """
     Sample points uniformly in a 2D rectangle defined by bounds.
+
+    Parameters:
+    -----------
+    n_samples : int
+        Number of samples to generate.
+    bounds : list of list of float, optional
+        Bounds for the sampling rectangle, default is [[-1, 1], [-1, 1]].
+
+    Returns:
+    --------
+    X : torch.Tensor (n_samples, 2)
+        Sampled points in 2D.
     """
-    x = np.random.uniform(bounds[0], bounds[1], n_samples)
-    y = np.random.uniform(bounds[2], bounds[3], n_samples)
-    samples = np.stack([x, y], axis=1)
-    return torch.from_numpy(samples).float().to(device)
+    x_min, x_max, y_min, y_max = bounds
+    x_samples = torch.rand(n_samples) * (x_max - x_min) + x_min
+    y_samples = torch.rand(n_samples) * (y_max - y_min) + y_min
+    return torch.stack((x_samples, y_samples), dim=1)
 
 
 def sample_grid(
@@ -114,16 +140,17 @@ def sample_grid(
 
 
 def export_config(cfg: ExperimentConfig):
-    config_dict = {
-        "N": cfg.N,
-        "m": cfg.m,
-        "beta": cfg.beta,
-        "device": cfg.device,
-        "omega_type": cfg.omega_type,
-        "export_path": str(cfg.export_path),
-    }
+    config_export = {}
+    for field in cfg.__dataclass_fields__:
+        value = getattr(cfg, field)
+        if isinstance(value, Path):
+            config_export[field] = str(value)
+        else:
+            config_export[field] = value
+
     with open(cfg.export_path / "experiment_config.json", "w") as f:
-        json.dump(config_dict, f, indent=4)
+        json.dump(config_export, f, indent=4)
+
     LOGGER.info(
         f"Experiment configuration exported to {cfg.export_path / 'experiment_config.json'}"
     )
@@ -157,10 +184,21 @@ def train_vector_field_models(
     device: str = "cpu",
     m: int = 2,
     n_epochs: int = 1000,
+    pbar: bool = True,
 ) -> tuple[torch.nn.Module, torch.nn.Module, list[float]]:
     v_model = V_estimator(hidden_dims=[64, 64], dim=m).to(device)
     omega_model = OmegaFromV(v_estimator=v_model, cometric=base_cometric).to(device)
-    loss_list = learn_v(X, f_values, Lf_values, f_grad_values, c_km, v_model, device=device, n_epochs=n_epochs)
+    loss_list = learn_v(
+        X,
+        f_values,
+        Lf_values,
+        f_grad_values,
+        c_km,
+        v_model,
+        device=device,
+        n_epochs=n_epochs,
+        pbar=pbar,
+    )
     return v_model, omega_model, loss_list
 
 
@@ -180,8 +218,7 @@ def qqt_summary_statistics(values: torch.Tensor) -> dict[str, float]:
 
 
 def instantiate_setup(cfg: ExperimentConfig):
-    X = sample_uniform(cfg.N, bounds=(-2, 2, -2, 2))
-    # X = sample_grid(cfg.N, bounds=(-2, 2, -2, 2))
+    X = sample_uniform2D(cfg.N, bounds=(-2, 2, -2, 2))
     # Shuffle the data to avoid any ordering effects
     X = X[torch.randperm(X.shape[0])]
     cfg.N = X.shape[0]  # Update N in case of grid sampling
@@ -198,7 +235,9 @@ def instantiate_setup(cfg: ExperimentConfig):
 
     edges = get_knn_graph(X, n_neighbors=cfg.n_neighbors, device=cfg.device)
     LOGGER.info(f"Found {edges.shape[0]} edges in the KNN graph.")
-    dst_edges = construct_distance_matrix(X, edges, randers_metric, use_approx=True)
+    dst_edges = construct_distance_matrix(
+        X, edges, randers_metric, use_approx=True, pbar=False
+    )
 
     return X, bounds, base_cometric, randers_metric, edges, dst_edges
 
@@ -209,7 +248,37 @@ def prepare_operators(
     dst_edges: torch.Tensor,
     epsilon: float,
     operator_type: str = "gaussian",
-):
+    theta: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Prepare the operators L_theta_s and L_theta_a based on the specified operator type.
+
+    Parameters:
+    -----------
+    cfg : ExperimentConfig
+        The configuration of the experiment.
+    edges : torch.Tensor
+        The edges of the KNN graph.
+    dst_edges : torch.Tensor
+        The distances corresponding to the edges of the KNN graph.
+    epsilon : float
+        The bandwidth parameter for the kernel.
+    operator_type : str, optional
+        The type of operator to use: 'gaussian' or 'laplacian'. Default is 'gaussian'.
+    theta : float, optional
+        The parameter for the theta operator. Default is 1.0.
+
+    Returns:
+    --------
+    c_km : torch.Tensor
+        The constant c_km used in the operators.
+    L_theta_s : torch.Tensor
+        The symmetric operator L_theta_s.
+    L_theta_a : torch.Tensor
+        The antisymmetric operator L_theta_a.
+    W_theta_s : torch.Tensor
+        The symmetric weight matrix W_theta_s.
+    """
     LOGGER.info("Computing W, mu_0, mu_1, and operators L_theta_s and L_theta_a...")
     if operator_type == "gaussian":
         W, mu_0, mu_1 = gaussian_kernel(edges, dst_edges, epsilon, cfg.N, cfg.m)
@@ -220,10 +289,16 @@ def prepare_operators(
             f"Unknown operator_type: {operator_type}. Must be 'gaussian' or 'laplacian'."
         )
     c_km = -mu_1 / mu_0 * (cfg.m + 1) / cfg.m
-    L_theta_s, L_theta_a = construct_operators(W, epsilon, theta=1)
+
+    Q_inv_theta = get_Q_inv_theta(W, theta=theta)
+    W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
+    P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
+    L_theta_s = 1 / epsilon**2 * P_theta_s
+    L_theta_a = 1 / epsilon * P_theta_a
+
     assert L_theta_a.isfinite().all(), "L_theta_a contains NaN or Inf values."
     assert L_theta_s.isfinite().all(), "L_theta_s contains NaN or Inf values."
-    return c_km, L_theta_s, L_theta_a
+    return c_km, L_theta_s, L_theta_a, W_theta_s
 
 
 def check_constant_function(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: torch.Tensor):
@@ -243,10 +318,12 @@ def check_constant_function(cfg: ExperimentConfig, X: torch.Tensor, L_theta_a: t
 
 
 def check_true_value_delta(true_rhs: torch.Tensor, Lf_values: torch.Tensor):
-    delta_rhs = true_rhs - Lf_values
-    delta_rhs_norm = torch.norm(delta_rhs, dim=1)
+    delta_rhs = true_rhs - Lf_values  # (K, N)
+    delta_rhs_norm = torch.norm(delta_rhs, dim=0)  # (N,)
     res_delta_rhs_norm = qqt_summary_statistics(delta_rhs_norm)
-    LOGGER.info(r"Delta_rhs_norm = $lVert Lf_k(x_i) - c_km <v(x_i), nabla f_k(x_i)>rVert$")
+    LOGGER.info(
+        r"Delta_rhs_norm = $\| Lf_k(x_i) - c_km <v(x_i), nabla f_k(x_i)>\|$ (averaged over K)"
+    )
     LOGGER.info(
         f"Delta_rhs_norm: mean = {res_delta_rhs_norm['mean']:.2e}, std = {res_delta_rhs_norm['std']:.2e}, min = {res_delta_rhs_norm['min']:.2e}, max = {res_delta_rhs_norm['max']:.2e}"
     )
@@ -289,6 +366,19 @@ def check_alpha_ratio(v_hat_deep: torch.Tensor, v_true: torch.Tensor):
     return res_alpha_ratio, alpha_ratio
 
 
+def check_v_est_vs_v_true(v_hat_deep: torch.Tensor, v_true: torch.Tensor):
+    """
+    Check the estimation of the vector field v_hat_deep against the true vector field v_true.
+    """
+    error_wrt_v = (v_true - v_hat_deep).pow(2).mean(dim=1).sqrt()  # (N,)
+    res_error_wrt_v = qqt_summary_statistics(error_wrt_v)
+    LOGGER.info(f"Error between true v and estimated v (Deep Model)")
+    LOGGER.info(
+        f"Error: mean = {res_error_wrt_v['mean']:.2e}, std = {res_error_wrt_v['std']:.2e}, min = {res_error_wrt_v['min']:.2e}, max = {res_error_wrt_v['max']:.2e}"
+    )
+    return res_error_wrt_v, error_wrt_v
+
+
 def plot_all_results(
     cfg,
     base_cometric,
@@ -303,6 +393,7 @@ def plot_all_results(
     ratio_rhs_mean,
     cosine_similarity_deep,
     alpha_ratio,
+    error_wrt_v,
 ):
     LOGGER.info("Plotting the density of the dataset and the vector field omega...")
     fig, axes = plot_mf_and_omega(base_cometric, X, randers_metric, bounds)
@@ -344,7 +435,7 @@ def plot_all_results(
     LOGGER.info("Plotting the distribution of delta_rhs...")
     sns.histplot(delta_rhs.flatten().cpu().detach().numpy(), bins=20, color="blue", alpha=0.7)
     plt.gca().set_yscale("log")
-    plt.title(r"Distribution of $Lf_k(x_i) - c_km <v(x_i), \nabla f_k(x_i)>$")
+    plt.title(r"Distribution of $ Lf_k(x_i) - c_km <v(x_i), \nabla f_k(x_i)>$")
     plt.savefig(cfg.export_path / "delta_rhs_distribution.png", dpi=300)
     plt.close()
 
@@ -377,18 +468,28 @@ def plot_all_results(
     plt.savefig(cfg.export_path / "alpha_ratio_distribution.png", dpi=300)
     plt.close()
 
+    LOGGER.info(
+        "Plotting the distribution of error between true v and estimated v (Deep Model)..."
+    )
+    plt.hist(error_wrt_v.cpu().detach().numpy(), bins=50, color="blue", alpha=0.7)
+    plt.xlabel("Error")
+    plt.ylabel("Frequency")
+    plt.title(r"Distribution of $\|v_{hat}(x_i) - v_{true}(x_i)\|_2$")
+    plt.savefig(cfg.export_path / "error_wrt_v_distribution.png", dpi=300)
+    plt.close()
+
 
 def main(cfg: ExperimentConfig):
 
     X, bounds, base_cometric, randers_metric, edges, dst_edges = instantiate_setup(cfg)
-    c_km, L_theta_a = prepare_operators(cfg, X, edges, dst_edges)
-    LOGGER.info(
-        "Computing the values of f, Lf, and grad f for the Mexican Hat and Gaussian families..."
-    )
+    if cfg.epsilon is not None:
+        epsilon = cfg.epsilon
+    else:
+        epsilon = compute_epsilon_empirical(dst_edges, scale=2.0)
+    c_km, L_theta_s, L_theta_a, W_theta_s = prepare_operators(cfg, edges, dst_edges, epsilon)
     f_values, Lf_values, f_grad_values = prepare_test_functions(
         cfg.K, cfg.function_type, X, L_theta_a
     )
-    LOGGER.info(f"Computed K = {f_values.shape[0]} test functions and their gradients.")
 
     # Compute the true vector field v_true and the corresponding b_true
     b_true = randers_metric.omega(X) * randers_metric.beta
@@ -397,7 +498,13 @@ def main(cfg: ExperimentConfig):
 
     LOGGER.info("Training vector field models...")
     v_model, omega_model, loss_list = train_vector_field_models(
-        cfg, X, base_cometric, c_km, f_values, Lf_values, f_grad_values
+        X,
+        base_cometric,
+        c_km,
+        f_values,
+        Lf_values,
+        f_grad_values,
+        n_epochs=cfg.n_epochs,
     )
     v_hat_deep = v_model(X).detach()
     b_hat_deep = omega_model(X).detach()
@@ -410,6 +517,7 @@ def main(cfg: ExperimentConfig):
         b_hat_deep, b_true
     )
     res_alpha_ratio, alpha_ratio = check_alpha_ratio(v_hat_deep, v_true)
+    res_error_wrt_v, error_wrt_v = check_v_est_vs_v_true(v_hat_deep, v_true)
 
     all_results = {
         "res_LF_value_constant": res_LF_value_constant,
@@ -417,6 +525,7 @@ def main(cfg: ExperimentConfig):
         "res_ratio_rhs_mean": res_ratio_rhs_mean,
         "res_cosine_similarity_deep": res_cosine_similarity_deep,
         "res_alpha_ratio": res_alpha_ratio,
+        "res_error_wrt_v": res_error_wrt_v,
     }
     export_results(cfg, all_results)
 
@@ -440,6 +549,7 @@ def main(cfg: ExperimentConfig):
             ratio_rhs_mean,
             cosine_similarity_deep,
             alpha_ratio,
+            error_wrt_v,
         )
 
 
@@ -456,6 +566,9 @@ if __name__ == "__main__":
         no_plot=args.no_plot,
         K=args.K,
         n_neighbors=args.n_neighbors,
+        function_type=args.function_type,
+        n_epochs=args.n_epochs,
+        epsilon=args.epsilon,
     )
     cfg.export_path.mkdir(parents=True, exist_ok=True)
     LOGGER.info(f"Results will be exported to: {cfg.export_path}")
