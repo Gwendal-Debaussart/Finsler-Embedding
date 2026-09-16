@@ -7,7 +7,7 @@ for n in "${n_list[@]}"; do
     uv run src/finsler_embedding/experiment_run.py \
         --export_path $export_path \
         --N 5000 \
-        --K 100 \
+        --K 400 \
         --omega_type constant \
         --no_plot
 done
