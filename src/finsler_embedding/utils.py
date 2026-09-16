@@ -475,27 +475,39 @@ def gaussian_kernel(edges, dst_edges, eps: float, N: int, m: int = 2):
     return W, mu_0, mu_1
 
 
-def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
+def get_Q_inv_theta(W: torch.Tensor, theta: int = 1):
     D = torch.sum(W, dim=1)
     D_prime = torch.sum(W, dim=0)
     Q = (D + D_prime) / 2
     Q_theta = Q**theta
     Q_inv_theta = 1 / Q_theta
-    Q_theta = torch.diag_embed(Q_theta)
     Q_inv_theta = torch.diag_embed(Q_inv_theta)
+    return Q_inv_theta
 
+
+def get_W_thetas(W: torch.Tensor, Q_inv_theta: torch.Tensor):
     W_theta = Q_inv_theta @ W @ Q_inv_theta
     W_theta_s = (W_theta + W_theta.T) / 2
     W_theta_a = (W_theta - W_theta.T) / 2
+    return W_theta_s, W_theta_a
+
+
+def construct_P_thetas(W_theta_s: torch.Tensor, W_theta_a: torch.Tensor):
     D_theta_s = torch.sum(W_theta_s, dim=1)
     D_theta_a = torch.sum(W_theta_a, dim=1)
     D_theta_a = torch.diag_embed(D_theta_a)
     D_theta_s_inv = 1 / D_theta_s
 
-    Id = torch.eye(W_theta.shape[0]).to(W_theta.device).to(W_theta.dtype)
+    Id = torch.eye(W_theta_s.shape[0]).to(W_theta_s.device).to(W_theta_s.dtype)
     P_theta_s = D_theta_s_inv[..., None] * W_theta_s - Id
     P_theta_a = D_theta_s_inv[..., None] * (W_theta_a - D_theta_a)
+    return P_theta_s, P_theta_a
 
+
+def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
+    Q_inv_theta = get_Q_inv_theta(W, theta)
+    W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
+    P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
     L_theta_s = 1 / eps**2 * P_theta_s
     L_theta_a = 1 / eps * P_theta_a
     return L_theta_s, L_theta_a
