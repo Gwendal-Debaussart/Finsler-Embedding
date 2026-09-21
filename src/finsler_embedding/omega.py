@@ -170,6 +170,43 @@ class CircularSphereOmega(torch.nn.Module):
         return omega
 
 
+
+def spiral_omega(z: torch.Tensor, freq: float) -> torch.Tensor:
+    """
+    Compute the omega vector field for a spiral.
+
+    Parameters:
+    ----------
+    z : torch.Tensor (n_points, 2)
+        The input points in 2D space.
+    freq : float
+        The frequency of the spiral.
+
+    Returns:
+    -------
+    torch.Tensor (n_points, 2)
+        The omega vector field at the input points.
+    """
+    x = z[:, 0]
+    y = z[:, 1]
+    t = torch.sqrt(x**2 + y**2)
+    omega_x = -freq * y / (t + 1e-8)  # Avoid division by zero
+    omega_y = freq * x / (t + 1e-8)   # Avoid division by zero
+    omega = torch.stack([omega_x, omega_y], dim=1)
+    return omega / torch.norm(omega, dim=1, keepdim=True)  # Normalize the vector field
+
+class OmegaSpiral(torch.nn.Module):
+    def __init__(self, cometric:CoMetric, freq: float = 1.0):
+        super().__init__()
+        self.cometric = cometric
+        self.freq = freq
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        omega = spiral_omega(z, freq=self.freq)
+        norm_omega = self.cometric.cometric(z, omega)
+        omega = omega / (norm_omega.unsqueeze(1) + 1e-8)  # Avoid division by zero
+        return omega
+
 def get_omega(
     omega_type: str, cometric: CoMetric, freq: float = 1.0, beta: float = 1.0, dim=2
 ):
@@ -185,6 +222,8 @@ def get_omega(
         return OmegaSwissRollNormal(cometric)
     elif omega_type == "circular_sphere":
         return CircularSphereOmega(cometric)
+    elif omega_type == "spiral":
+        return OmegaSpiral(cometric, freq=freq)
     else:
         raise ValueError(
             f"Invalid omega_type '{omega_type}'. Valid options are {VALID_OMEGA_TYPES}."
