@@ -4,11 +4,8 @@ import torch
 from sklearn.neighbors import kneighbors_graph
 from torchvision.ops import MLP
 from geodesic_toolbox import *
-from scipy.special import factorial
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-
-from math import gamma as _gamma
 
 
 def get_bounds(embeddings: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
@@ -42,6 +39,35 @@ def get_bounds(embeddings: torch.Tensor, margin: float = 0.0) -> torch.Tensor:
     bounds = [min_x, max_x, min_y, max_y]
     bounds = torch.tensor(bounds)
     return bounds
+
+
+def get_grid_pts(bounds: torch.Tensor, n_pts: int) -> torch.Tensor:
+    """
+    Generate a grid of points within the specified bounds.
+
+    Parameters:
+    ----------
+    bounds : torch.Tensor (4,)
+        [min_x, max_x, min_y, max_y], the bounds of the grid.
+    n_pts : int
+        The number of points along each axis.
+
+    Returns:
+    -------
+    torch.Tensor (n_pts*n_pts, 2)
+        The grid points within the specified bounds.
+    """
+    min_x, max_x, min_y, max_y = bounds
+    x = torch.linspace(min_x, max_x, n_pts)
+    y = torch.linspace(min_y, max_y, n_pts)
+    X, Y = torch.meshgrid(x, y, indexing="ij")
+    grid_points = torch.stack([X.flatten(), Y.flatten()], dim=1)
+    return grid_points
+
+###################################
+# Below is unused stuff, delete ?
+###################################
+
 
 
 def find_espilon(dst_mat: torch.Tensor) -> float:
@@ -220,310 +246,6 @@ def build_grad_phi(
         )  # (1, N, D), (1, N, D, D)
         grad_phi[i, :, :] = grad_phi_i_[0]
     return grad_phi
-
-
-def symmetrize_edges(edges: torch.Tensor) -> torch.Tensor:
-    """
-    Symmetrizes the edges of a graph represented by a tensor of shape (M, 2).
-    So that if (i, j) is an edge, then (j, i) is also an edge.
-
-    Parameters:
-    ----------
-    edges : torch.Tensor (M, 2)
-        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-
-    Returns:
-    -------
-    sym_edges : torch.Tensor (M', 2)
-        The symmetrized edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-    """
-    sym_edges = torch.cat([edges, edges.flip(1)], dim=0)
-    sym_edges = torch.unique(sym_edges, dim=0)
-    return sym_edges
-
-
-def get_knn_graph(X: torch.Tensor, n_neighbors: int, device: torch.device) -> torch.Tensor:
-    """
-    Computes the k-nearest neighbors graph for the given data points.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (N, D)
-        The input points.
-    n_neighbors : int
-        The number of neighbors to consider for each point.
-    device : torch.device
-        The device to which the output tensor should be moved.
-
-    Returns:
-    -------
-    edges : torch.Tensor (M, 2)
-        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-    """
-    if n_neighbors == -1:
-        # Fully connected graph
-        N = X.shape[0]
-        edges = torch.combinations(torch.arange(N, device=device), r=2)
-        return edges
-
-    graph = kneighbors_graph(
-        X.detach().cpu().numpy(), n_neighbors=n_neighbors, mode="distance", include_self=False
-    )
-    # Retrieve al the pairs of edges from the graph
-    edges = np.array(graph.nonzero()).T
-    edges = torch.from_numpy(edges).to(device)
-    edges = symmetrize_edges(edges)
-    return edges
-
-
-def distance_matrix_straight_line(
-    X: torch.Tensor,
-    edges: torch.Tensor,
-    randers: RandersMetrics,
-    batch_size: int = 100,
-    num_quad_points: int = 10,
-    pbar: bool = True,
-) -> torch.Tensor:
-    """
-    Compute Randers distances along straight-line segments for graph edges.
-
-    The integral
-        d_F(x_i, x_j) = ∫_0^1 F(x_i + t(x_j-x_i), x_j-x_i) dt
-    is evaluated using composite trapezoidal quadrature on [0, 1].
-    """
-    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
-
-    t = torch.linspace(0.0, 1.0, num_quad_points, device=X.device, dtype=X.dtype)
-
-    if pbar:
-        pbar_ = tqdm(range(0, edges.shape[0], batch_size), desc="Computing Randers distances")
-    else:
-        pbar_ = range(0, edges.shape[0], batch_size)
-
-    for start in pbar_:
-        batch_edges = edges[start : start + batch_size]
-        x0 = X[batch_edges[:, 0]]
-        x1 = X[batch_edges[:, 1]]
-        dx = x1 - x0
-        x = x0[:, None, :] + t[None, :, None] * dx[:, None, :]
-        v = dx[:, None, :].expand(-1, num_quad_points, -1)
-        F = randers(x.reshape(-1, X.shape[-1]), v.reshape(-1, X.shape[-1]))
-        F = F.reshape(x.shape[0], num_quad_points)
-        dst = torch.trapezoid(F, t, dim=1)
-
-        dst_mat[start : start + batch_edges.shape[0]] = dst
-
-    return dst_mat
-
-
-def georce_distance_matrix(
-    X: torch.Tensor,
-    edges: torch.Tensor,
-    randers: RandersMetrics,
-    batch_size: int = 100,
-    pbar: bool = True,
-) -> torch.Tensor:
-    """
-    Compute the geodesic distance matrix for a set of edges and a Randers metric.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (N, D)
-        The input points.
-    edges : torch.Tensor (M, 2)
-        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-    randers : RandersMetrics
-        The Randers metric object.
-    batch_size : int
-        The batch size for computing distances. (default is 100)
-
-    Returns:
-    -------
-    dst_mat : torch.Tensor (N, N)
-        The constructed distance matrix.
-    """
-    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
-    solver = GEORCEFinsler(finsler=randers, T=25, max_iter=20)
-    if pbar:
-        pbar_ = tqdm(range(0, edges.shape[0], batch_size), desc="Computing Randers distances")
-    else:
-        pbar_ = range(0, edges.shape[0], batch_size)
-    for start in pbar_:
-        batch_edges = edges[start : start + batch_size]
-        x0 = X[batch_edges[:, 0]]
-        x1 = X[batch_edges[:, 1]]
-        dst = solver(x0, x1)
-        dst_mat[start : start + batch_edges.shape[0]] = dst
-    return dst_mat
-
-
-def construct_distance_matrix(
-    X: torch.Tensor,
-    edges: torch.Tensor,
-    randers: RandersMetrics,
-    batch_size: int = 100,
-    use_approx: bool = True,
-    pbar: bool = True,
-) -> torch.Tensor:
-    """Construct a distance matrix from a set of edges and a Randers metric.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (N, D)
-        The input points.
-    edges : torch.Tensor (M, 2)
-        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
-    randers : RandersMetrics
-        The Randers metric object.
-    batch_size : int
-        The batch size for computing distances. (default is 100)
-    use_approx : bool
-        Whether to use the straight-line approximation for distance computation. If False, the geodesic distance is computed. (default is True)
-    Returns:
-    -------
-    dst_mat : torch.Tensor (N, N)
-        The constructed distance matrix.
-    """
-    if use_approx:
-        dst_mat = distance_matrix_straight_line(
-            X, edges, randers, batch_size=batch_size, pbar=pbar
-        )
-    else:
-        dst_mat = georce_distance_matrix(X, edges, randers, batch_size=batch_size, pbar=pbar)
-    return dst_mat
-
-
-def compute_epsilon_rate(N: int, m: int) -> float:
-    """
-    Computes the epsilon value based on the number of points N and the dimension m.
-    This is a heuristic to set the scale of the kernel based on the data.
-    It usually sucks and give waaaay too low values of epsilon.
-
-    Parameters:
-    ----------
-    N : int
-        The number of data points.
-    m : int
-        The dimension of the data.
-
-    Returns:
-    -------
-    epsilon : float
-        The computed epsilon value.
-    """
-    return (np.log(N) / N) ** (1 / m + 4)
-
-
-def compute_epsilon_nn(X: torch.Tensor) -> float:
-    """
-    Compute the bandwidth parameter as the min max distance between points in the dataset X.
-
-    Parameters:
-    ----------
-    X : torch.Tensor (N, D)
-        The input points.
-
-    Returns:
-    -------
-    epsilon : float
-        The computed bandwidth parameter.
-    """
-    neighbor_rank = 2
-    eps = 1e-8
-    K = X.shape[0]
-    dst_centroids = torch.cdist(X, X, p=2)  # (K,K)
-    dst_centroids.fill_diagonal_(float("inf"))
-    sorted_dst, _ = torch.sort(dst_centroids, dim=1)
-    rank = min(max(neighbor_rank - 1, 0), max(K - 2, 0))  # (K,)
-    nn_dist = sorted_dst[:, rank]  # (K,)
-    nn_scale2 = nn_dist.pow(2).clamp_min(eps)
-    return nn_scale2.mean().item()
-
-
-def compute_epsilon_empirical(dst_edges: torch.Tensor, scale: float = 1.0) -> float:
-    """
-    Compute the bandwidth parameter as the standard deviation of the distances in dst_edges.
-
-    Parameters:
-    ----------
-    dst_edges : torch.Tensor (M,)
-        The distances between points in the dataset.
-    scale : float
-        A scaling factor to adjust the computed bandwidth. (default is 1.0)
-
-    Returns:
-    -------
-    epsilon : float
-        The computed bandwidth parameter.
-    """
-    return dst_edges.std().item() * scale
-
-
-def laplacian_kernel(
-    edges: torch.Tensor, dst_edges: torch.Tensor, eps: float, N: int, m: int = 2
-):
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-
-    W = torch.zeros_like(dst_mat)
-    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] / eps)
-    W.fill_diagonal_(0)
-
-    mu_0 = factorial(m - 1)
-    mu_1 = factorial(m)
-    return W, mu_0, mu_1
-
-
-def gaussian_kernel(edges, dst_edges, eps: float, N: int, m: int = 2):
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-
-    W = torch.zeros_like(dst_mat)
-    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] ** 2 / eps**2)
-    W.fill_diagonal_(0)
-
-    mu_0 = 1 / 2 * torch.lgamma(torch.tensor(m) / 2).exp()
-    mu_1 = 1 / 2 * torch.lgamma(torch.tensor(m + 1) / 2).exp()
-
-    return W, mu_0, mu_1
-
-
-def get_Q_inv_theta(W: torch.Tensor, theta: int = 1):
-    D = torch.sum(W, dim=1)
-    D_prime = torch.sum(W, dim=0)
-    Q = (D + D_prime) / 2
-    Q_theta = Q**theta
-    Q_inv_theta = 1 / Q_theta
-    Q_inv_theta = torch.diag_embed(Q_inv_theta)
-    return Q_inv_theta
-
-
-def get_W_thetas(W: torch.Tensor, Q_inv_theta: torch.Tensor):
-    W_theta = Q_inv_theta @ W @ Q_inv_theta
-    W_theta_s = (W_theta + W_theta.T) / 2
-    W_theta_a = (W_theta - W_theta.T) / 2
-    return W_theta_s, W_theta_a
-
-
-def construct_P_thetas(W_theta_s: torch.Tensor, W_theta_a: torch.Tensor):
-    D_theta_s = torch.sum(W_theta_s, dim=1)
-    D_theta_a = torch.sum(W_theta_a, dim=1)
-    D_theta_a = torch.diag_embed(D_theta_a)
-    D_theta_s_inv = 1 / D_theta_s
-
-    Id = torch.eye(W_theta_s.shape[0]).to(W_theta_s.device).to(W_theta_s.dtype)
-    P_theta_s = D_theta_s_inv[..., None] * W_theta_s - Id
-    P_theta_a = D_theta_s_inv[..., None] * (W_theta_a - D_theta_a)
-    return P_theta_s, P_theta_a
-
-
-def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
-    Q_inv_theta = get_Q_inv_theta(W, theta)
-    W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
-    P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
-    L_theta_s = 1 / eps**2 * P_theta_s
-    L_theta_a = 1 / eps * P_theta_a
-    return L_theta_s, L_theta_a
 
 
 ##############################
@@ -803,200 +525,3 @@ def learn_v(
         if pbar:
             pbar_.set_description(f"Loss: {loss.item():.4e}")
     return loss_list
-
-
-################
-
-
-def carre_du_champ(L_s: torch.Tensor, psi: torch.Tensor) -> torch.Tensor:
-    """
-    Constructs the Carré du Champ operator Gamma_i^{kl} for the functions psi_k, psi_l with respect to the operator L^s.
-
-        Gamma_i^{kl} = 1/2 [ L^s(psi_k psi_l) - psi_k L^s psi_l - psi_l L^s psi_k ]_i
-
-    Parameters:
-    ----------
-    L_s : torch.Tensor (N, N)
-        The symmetric operator L^s.
-    psi: torch.Tensor (N, K)
-        The low-dimensional embedding of the data points.
-
-    Returns:
-    -------
-    Gamma : torch.Tensor (N, K, K)
-        The Carré du Champ operator evaluated at each point.
-
-    Remarks:
-        It is a cometric, meaning it should be contracted with the pseudoinverse of the metric tensor, not the metric tensor itself.
-    """
-    N, K = psi.shape
-    L_psi = L_s @ psi  # (N, K), computed once
-    prod = psi[:, :, None] * psi[:, None, :]  # (N, K, K)
-    L_prod = torch.einsum("ij,jkl->ikl", L_s, prod)  # L^s applied to psi_k psi_l
-    cross = psi[:, :, None] * L_psi[:, None, :]
-    Gamma = 0.5 * (L_prod - cross - cross.transpose(1, 2))
-    return 0.5 * (Gamma + Gamma.transpose(1, 2))  # symmetrize
-
-
-def truncated_pinv(A: torch.Tensor, rank: int, rcond: float = 1e-10):
-    """
-    Pseudo-inverse of a batch of symmetric PSD matrices, truncated to
-    `rank` (= m).
-
-    Gamma has rank m by construction; a default-tolerance pinv is
-    numerically unreliable when K > m.
-
-    Parameters:
-    ----------
-    A : torch.Tensor (..., N, N)
-        A batch of symmetric positive semi-definite matrices.
-    rank : int
-        The rank to which the pseudo-inverse should be truncated.
-    rcond : float
-        Relative condition number for small eigenvalues. Eigenvalues smaller than rcond * max(eigenvalue) are treated as zero.
-
-    Returns:
-    -------
-    pinv_A : torch.Tensor (..., N, N)
-        The truncated pseudo-inverse of A.
-        It verifies that A @ pinv_A @ A = A and pinv_A @ A @ pinv_A = pinv_A, and has rank at most `rank`.
-    """
-    evals, evecs = torch.linalg.eigh(A)  # ascending
-    evals = evals[..., -rank:]
-    evecs = evecs[..., -rank:]
-    keep = evals > rcond * evals[..., -1:].clamp_min(0).abs()
-    inv = torch.where(keep, 1.0 / evals.clamp_min(rcond), torch.zeros_like(evals))
-    return evecs @ torch.diag_embed(inv) @ evecs.transpose(-1, -2)
-
-
-def kernel_moments(m: int, kernel: str = "gaussian"):
-    """
-    Compute the moments of the kernel function K(r).
-    If the kernel is Gaussian, K(r) = exp(-r^2 / 2), the moments are given by:
-        mu_n = 2^{(m+n)/2 - 1} Gamma((m+n)/2)
-    If the kernel is exponential, K(r) = exp(-r), the moments are given by:
-        mu_n = Gamma(m+n)
-
-    Parameters:
-    ----------
-    m : int
-        The dimension of the space.
-    kernel : str
-        The type of kernel to use. Supported values are "gaussian" and "exponential".
-
-    Returns:
-    -------
-    mu_0, mu_1, mu_2 : tuple of floats
-        The moments of the kernel function K(r) for n = 0, 1, 2, respectively.
-    """
-    if kernel == "gaussian":
-        return tuple(2.0 ** ((m + n) / 2 - 1) * _gamma((m + n) / 2) for n in (0, 1, 2))
-    if kernel == "exponential":
-        return tuple(_gamma(m + n) for n in (0, 1, 2))
-    raise ValueError(f"unknown kernel {kernel!r}")
-
-
-def randers_constants(m: int, kernel: str = "gaussian"):
-    """c_2, C and kappa_K of the review (corrected values)."""
-    mu0, mu1, mu2 = kernel_moments(m, kernel)
-    c_2 = mu2 / (2.0 * m * mu0)  # [FIX-F] was 4*mu2/(m*mu0)
-    C = (m + 1) * mu1 / (m * mu0)
-    return c_2, C, c_2 / C**2
-
-
-def truncated_pinv(A: torch.Tensor, rank: int, rcond: float = 1e-10):
-    """
-    Pseudo-inverse of a batch of symmetric PSD matrices, truncated to
-    `rank` (= m).
-
-    Gamma has rank m by construction; a default-tolerance pinv is
-    numerically unreliable when K > m.
-
-    Parameters:
-    ----------
-    A : torch.Tensor (..., N, N)
-        A batch of symmetric positive semi-definite matrices.
-    rank : int
-        The rank to which the pseudo-inverse should be truncated.
-    rcond : float
-        Relative condition number for small eigenvalues. Eigenvalues smaller than rcond * max(eigenvalue) are treated as zero.
-
-    Returns:
-    -------
-    pinv_A : torch.Tensor (..., N, N)
-        The truncated pseudo-inverse of A.
-        It verifies that A @ pinv_A @ A = A and pinv_A @ A @ pinv_A = pinv_A, and has rank at most `rank`.
-    """
-    evals, evecs = torch.linalg.eigh(A)  # ascending
-    evals = evals[..., -rank:]
-    evecs = evecs[..., -rank:]
-    keep = evals > rcond * evals[..., -1:].clamp_min(0).abs()
-    inv = torch.where(keep, 1.0 / evals.clamp_min(rcond), torch.zeros_like(evals))
-    return evecs @ torch.diag_embed(inv) @ evecs.transpose(-1, -2)
-
-
-def randers_approximation(
-    X_low,
-    W: torch.Tensor,
-    epsilon: float,
-    m: int = 2,
-    kernel_type: str = "gaussian"
-):
-
-    Q_inv_theta = get_Q_inv_theta(W, theta=1)
-    W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
-    P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
-    L_theta_s = 1 / epsilon**2 * P_theta_s
-    L_theta_a = 1 / epsilon * P_theta_a
-
-    c_2, C, kappa = randers_constants(m, kernel=kernel_type)
-
-    Gamma = carre_du_champ(L_theta_s, X_low)
-    V = L_theta_a @ X_low
-    Gamma_pinv = truncated_pinv(Gamma, rank=m)
-
-    c_norm_sq = kappa * torch.einsum("nij,ni,nj->n", Gamma_pinv, V, V)
-    admissible = c_norm_sq < 1.0 / (m + 3)
-
-    c_tilde = (kappa**0.5) * V
-    H_tilde_inv = Gamma - (m + 2) * kappa * torch.einsum("ni,nj->nij", V, V)
-    H_tilde = truncated_pinv(H_tilde_inv, rank=m)
-    lambda_tilde = 1.0 - torch.einsum("nij,ni,nj->n", H_tilde, c_tilde, c_tilde)
-
-    # # Quantities used for display
-    # V_norm = V / (c_norm_sq.sqrt() + 1e-12).unsqueeze(1)
-    # unit_V = V / (V.norm(dim=1, keepdim=True) + 1e-12)
-    return {
-        "W": W,
-        "L_theta_s": L_theta_s,
-        "L_theta_a": L_theta_a,
-        "Gamma": Gamma,
-        "V": V,
-        "Gamma_pinv": Gamma_pinv,
-        "c_norm_sq": c_norm_sq,
-        "admissible": admissible,
-        "c_tilde": c_tilde,
-        "H_tilde": H_tilde,
-        "lambda_tilde": lambda_tilde,
-        "c_2": c_2,
-        "C": C,
-        "kappa": kappa,
-    }
-
-
-def interpolate_V(X_low: torch.Tensor, V: torch.Tensor, dim: int,n_epochs: int = 500):
-    # Train a NN to interpolate V
-    model = MLP(in_channels=dim, hidden_channels=[64, 64, dim])
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    loss_list = []
-    pbar = tqdm(range(n_epochs))
-    for epoch in pbar:
-        optimizer.zero_grad()
-        V_pred = model(X_low)
-        loss = torch.nn.functional.mse_loss(V_pred, V)
-        loss.backward()
-        optimizer.step()
-        pbar.set_description(f"Loss: {loss.item():.4f}")
-        loss_list.append(loss.item())
-    return model, loss_list
