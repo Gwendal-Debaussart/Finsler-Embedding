@@ -80,7 +80,7 @@ def compute_epsilon_rate(N: int, m: int) -> float:
     epsilon : float
         The computed epsilon value.
     """
-    return (np.log(N) / N) ** (1 / m + 4)
+    return (np.log(N) / N) ** (1 / (m + 4))
 
 
 def compute_epsilon_nn(X: torch.Tensor) -> float:

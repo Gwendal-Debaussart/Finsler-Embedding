@@ -52,17 +52,19 @@ from geodesic_toolbox.cometric import (
 )
 from finsler_embedding.disbm import graph_info
 from finsler_embedding.omega import CircularSphereOmega, OmegaSwissRoll
-from finsler_embedding.utils import (
+from finsler_embedding.graph import (
     compute_epsilon_empirical,
     compute_epsilon_rate,
     construct_distance_matrix,
-    gaussian_kernel,
     get_knn_graph,
+    symmetrize_edges,
+)
+from finsler_embedding.operators import (
+    gaussian_kernel,
     get_Q_inv_theta,
     get_W_thetas,
     randers_approximation,
     randers_constants,
-    symmetrize_edges,
 )
 
 logging.getLogger().setLevel(logging.WARNING)
@@ -325,7 +327,7 @@ def run_manifold(args) -> pd.DataFrame:
                     J = local_jacobian(data["X_chart"].detach(), Y, data["P"])
                 else:
                     raise ValueError(f"unknown embedding {emb!r}")
-                res = randers_approximation(Y, W, eps, m=m)
+                res = randers_approximation(W, eps, X_low=Y, m=m)
                 row = evaluate_embedding(
                     res, Y, J, data["truth"], m,
                     {"dataset": args.dataset, "embedding": emb, "N": N, "seed": seed, "beta": args.beta,
@@ -369,7 +371,7 @@ def disbm_direction(p: float, r: float, K: int, N: int, dim: int = 2, eps: float
     W_theta_s, _ = get_W_thetas(W, get_Q_inv_theta(W, theta=1))
     Y = SpectralEmbedding(n_components=dim, affinity="precomputed").fit_transform(W_theta_s.numpy())
     Y = torch.from_numpy(Y).float()
-    res = randers_approximation(Y, W, eps, m=m)
+    res = randers_approximation(W, eps, X_low=Y, m=m)
     V = res["V"]
     mu = torch.stack([Y[labels == k].mean(0) for k in range(K)])
     forward = mu[(torch.arange(K) + 1) % K] - mu[(torch.arange(K) - 1) % K]  # (K, l)

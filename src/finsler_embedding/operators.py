@@ -179,6 +179,19 @@ def randers_constants(m: int, kernel: str = "gaussian"):
     return c_2, C, c_2 / C**2
 
 
+def leading_eigenvectors(W_s: torch.Tensor, n_components: int) -> torch.Tensor:
+    """
+    Leading non-trivial eigenvectors of the random-walk operator D^{-1} W_s (equivalently, the
+    eigenvectors of L^s = (D^{-1} W_s - I) / eps^2 with the eigenvalues closest to 0), computed from
+    the symmetric matrix D^{-1/2} W_s D^{-1/2}. The constant eigenvector is dropped.
+    """
+    d_inv_sqrt = W_s.sum(dim=1).rsqrt()
+    S = d_inv_sqrt[:, None] * W_s * d_inv_sqrt[None, :]
+    _, evecs = torch.linalg.eigh(S)  # ascending eigenvalues
+    evecs = evecs[:, -(n_components + 1) : -1].flip(1)  # largest ones, without the trivial one
+    return d_inv_sqrt[:, None] * evecs
+
+
 def randers_approximation(
     W: torch.Tensor, epsilon: float, X_low=None, m: int = 2, kernel_type: str = "gaussian"
 ):
@@ -192,8 +205,7 @@ def randers_approximation(
     c_2, C, kappa = randers_constants(m, kernel=kernel_type)
 
     if X_low is None:
-        eigenvalues, eigenvectors = torch.linalg.eigh(W_theta_s)
-        X_low = eigenvectors[:, :m]
+        X_low = leading_eigenvectors(W_theta_s, m)
 
     Gamma = carre_du_champ(L_theta_s, X_low)
     V = L_theta_a @ X_low
