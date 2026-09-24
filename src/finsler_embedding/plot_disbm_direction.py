@@ -4,7 +4,7 @@ between communities (r fixed): (a) signed cosine between the node drifts and the
 of the cycle of communities, (b) estimated strength of the asymmetry ||hat c||_{hat g_BL}.
 Lines are medians over the nodes of all seeds, bands their 10-90% range.
 
-    python plot_disbm_direction.py [--seeds 5] [--out disbm_direction]
+    python -m finsler_embedding.plot_disbm_direction [--seeds 5] [--out disbm_direction]
 """
 
 import argparse

@@ -142,10 +142,16 @@ def distance_matrix_straight_line(
     The integral
         d_F(x_i, x_j) = ∫_0^1 F(x_i + t(x_j-x_i), x_j-x_i) dt
     is evaluated using composite trapezoidal quadrature on [0, 1].
-    """
-    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
 
+    For a Randers metric F(x, v) = alpha(x, v) + beta(x, v), the segments i -> j and j -> i go
+    through the same points with opposite velocities, and F(x, -v) = alpha(x, v) - beta(x, v):
+    both directions are computed from a single evaluation of alpha and beta.
+    """
     t = torch.linspace(0.0, 1.0, num_quad_points, device=X.device, dtype=X.dtype)
+    if isinstance(randers, RandersMetrics):
+        return _randers_straight_line_pairs(X, edges, randers, t, batch_size, pbar)
+
+    dst_mat = torch.zeros(edges.shape[0], device=X.device, dtype=X.dtype)
 
     if pbar:
         pbar_ = tqdm(range(0, edges.shape[0], batch_size), desc="Computing Randers distances")
@@ -166,6 +172,34 @@ def distance_matrix_straight_line(
         dst_mat[start : start + batch_edges.shape[0]] = dst
 
     return dst_mat
+
+
+def _randers_straight_line_pairs(X, edges, randers, t, batch_size, pbar):
+    """Straight-line Randers distances of the edges, computing each pair {i, j} once for both directions."""
+    N, D = X.shape
+    n_quad = t.shape[0]
+    # One segment per unordered pair, oriented from the smaller to the larger index
+    lo, hi = edges.min(dim=1).values, edges.max(dim=1).values
+    pair_key, inverse = torch.unique(lo * N + hi, return_inverse=True)
+    pairs = torch.stack([pair_key // N, pair_key % N], dim=1)
+    d_fwd = torch.zeros(pairs.shape[0], device=X.device, dtype=X.dtype)
+    d_bwd = torch.zeros_like(d_fwd)
+
+    batch_size = batch_size * 2  # each pair gives two edges
+    starts = range(0, pairs.shape[0], batch_size)
+    for start in tqdm(starts, desc="Computing Randers distances") if pbar else starts:
+        p = pairs[start : start + batch_size]
+        x0, x1 = X[p[:, 0]], X[p[:, 1]]
+        dx = x1 - x0
+        x = (x0[:, None, :] + t[None, :, None] * dx[:, None, :]).reshape(-1, D)
+        v = dx[:, None, :].expand(-1, n_quad, -1).reshape(-1, D)
+        alpha = randers.base_cometric.metric(x, v).reshape(-1, n_quad)
+        beta = randers.beta_form(x, v).reshape(-1, n_quad)
+        d_fwd[start : start + p.shape[0]] = torch.trapezoid(alpha + beta, t, dim=1)
+        d_bwd[start : start + p.shape[0]] = torch.trapezoid(alpha - beta, t, dim=1)
+
+    # Edge i -> j is the forward direction of its pair if i < j, the backward one otherwise
+    return torch.where(edges[:, 0] < edges[:, 1], d_fwd[inverse], d_bwd[inverse])
 
 
 def georce_distance_matrix(

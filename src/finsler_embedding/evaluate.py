@@ -156,7 +156,19 @@ def local_jacobian(X: torch.Tensor, Y: torch.Tensor, P: torch.Tensor, k: int = 1
 ##############################
 
 
-def build_graph(X_graph, F, graph: str, k: int, eps_scale: float, eps0: float, m: int, cut: float = 3.0):
+def edge_distances(X, edges, F, device: str = "cpu", batch_size: int = 100) -> torch.Tensor:
+    """Straight-line Finsler distances of the edges, computed on `device` (e.g. "mps", "cuda")."""
+    if device == "cpu":
+        return construct_distance_matrix(X, edges, F, use_approx=True, pbar=False, batch_size=batch_size)
+    F.to(device)
+    dst = construct_distance_matrix(X.to(device), edges.to(device), F, use_approx=True, pbar=False,
+                                    batch_size=batch_size)
+    F.to("cpu")
+    return dst.cpu()
+
+
+def build_graph(X_graph, F, graph: str, k: int, eps_scale: float, eps0: float, m: int, cut: float = 3.0,
+                radius: float = None, device: str = "cpu"):
     """
     Directed kernel W from a kNN or radius graph, with straight-line Finsler distances.
 
@@ -164,18 +176,29 @@ def build_graph(X_graph, F, graph: str, k: int, eps_scale: float, eps0: float, m
     exp(-d_F^2 / eps^2) is negligible past d_F = 3 eps, but along the drift of a Randers metric
     F(x, v) >= (1 - ||b||) |v|, so it only vanishes at Euclidean distance 3 eps / (1 - ||b||):
     use cut >= 3 / (1 - ||b||) to avoid truncating the kernel (which rescales both V and Gamma).
+
+    Radius graph with a fixed Euclidean radius (radius is not None): the edges are the pairs at
+    Euclidean distance < radius, and eps is set so that the kernel is negligible outside the graph,
+    for any Finsler metric: with rho = min over the edges of d_F(x_i, x_j) / |x_j - x_i|, every pair
+    with d_F < 3 eps lies within the radius as soon as eps = rho * radius / 3.
     """
     N = X_graph.shape[0]
     if graph == "knn":
         edges = get_knn_graph(X_graph, n_neighbors=k, device="cpu")
-        dst = construct_distance_matrix(X_graph, edges, F, use_approx=True, pbar=False)
+        dst = edge_distances(X_graph, edges, F, device)
         eps = compute_epsilon_empirical(dst, scale=eps_scale)
+    elif graph == "radius" and radius is not None:
+        A = radius_neighbors_graph(X_graph.detach().numpy(), radius=radius, include_self=False)
+        edges = symmetrize_edges(torch.from_numpy(np.array(A.nonzero()).T))
+        dst = edge_distances(X_graph, edges, F, device, batch_size=5000)
+        rho = (dst.detach() / (X_graph[edges[:, 1]] - X_graph[edges[:, 0]]).norm(dim=1)).min().item()
+        eps = rho * radius / 3
     elif graph == "radius":
         # eps follows the rate of Thm. convergence_discrete_op
         eps = eps0 * compute_epsilon_rate(N, m)
         A = radius_neighbors_graph(X_graph.detach().numpy(), radius=cut * eps, include_self=False)
         edges = symmetrize_edges(torch.from_numpy(np.array(A.nonzero()).T))
-        dst = construct_distance_matrix(X_graph, edges, F, use_approx=True, pbar=False)
+        dst = edge_distances(X_graph, edges, F, device)
     else:
         raise ValueError(f"unknown graph {graph!r}")
     W, _, _ = gaussian_kernel(edges, dst.detach(), eps, N, m)
@@ -229,6 +252,11 @@ def evaluate_embedding(res, Y, J, truth, m, extra) -> dict:
     trace_ratio_G = G.diagonal(dim1=1, dim2=2).sum(1) / G_ref.diagonal(dim1=1, dim2=2).sum(1)
     relerr_G = (G - G_ref).flatten(1).norm(dim=1) / G_ref.flatten(1).norm(dim=1)
     relerr_cnorm = (res["c_norm_sq"][adm] - c_norm_true).abs() / c_norm_true
+    # Same error over all samples: restricting to the admissible ones selects the samples whose
+    # (noisy) estimate is low, and biases the error when ||c||^2_{g_BL} is close to 1 / (m + 3)
+    c_norm_all = torch.einsum("ni,nij,nj->n", c, torch.linalg.inv(g_bl_inv), c)
+    ratio_cnorm_all = res["c_norm_sq"] / c_norm_all
+    cos_all = torch.nn.functional.cosine_similarity(res["V"], C * torch.einsum("nlm,nm->nl", J, c), dim=1)
 
     def med(t):
         return float(t.median())
@@ -242,12 +270,31 @@ def evaluate_embedding(res, Y, J, truth, m, extra) -> dict:
         "trace_ratio_Gamma": med(trace_ratio_G),
         "relerr_Gamma": med(relerr_G),
         "relerr_c_norm": med(relerr_cnorm),
+        "relerr_c_norm_all": med((ratio_cnorm_all - 1).abs()),
+        "ratio_c_norm_all": med(ratio_cnorm_all),
+        "cos_V_all": med(cos_all),
     }
 
 
 ##############################
 # Datasets
 ##############################
+
+
+class CachedCentroidsCometric(CentroidsCometric):
+    """
+    CentroidsCometric remembering its last evaluation. A Randers metric evaluates the cometric twice
+    at the same points (for |v|_A and for the normalization of omega), and each evaluation sums
+    over all the N centroids: the cache halves the cost of the Finsler distances.
+    """
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        last = getattr(self, "_last", None)
+        if last is not None and last[0] is z and last[1] == z._version:
+            return last[2]
+        out = super().forward(z)
+        self._last = (z, z._version, out)
+        return out
 
 
 class Mountain(torch.nn.Module):
@@ -280,10 +327,8 @@ def make_sphere(N: int, beta: float):
 def make_swiss_roll_data(N: int, beta: float, noise: float = 0.1):
     X, t = make_swiss_roll(n_samples=N, noise=noise)
     X = torch.from_numpy(X).float()
-    try:  # Newer geodesic_toolbox versions take kappa (used for the paper figure)
-        cometric = CentroidsCometric(centroids=X, cometric_centroids=IdentityCoMetric()(X), kappa=5)
-    except TypeError:
-        cometric = CentroidsCometric(centroids=X, cometric_centroids=IdentityCoMetric()(X))
+    # Same cometric as the paper figure (kappa = 5)
+    cometric = CachedCentroidsCometric(centroids=X, cometric_centroids=IdentityCoMetric()(X), kappa=5)
     omega = OmegaSwissRoll(cometric, jitter=0.0)
     F = RandersMetrics(base_cometric=cometric, omega=omega, beta=beta)
     P = tangent_basis(X, m=2)
@@ -314,7 +359,8 @@ def run_manifold(args) -> pd.DataFrame:
             np.random.seed(seed)
             data = DATASETS[args.dataset](N, args.beta)
             W, edges, dst, eps = build_graph(
-                data["X_graph"], data["F"], args.graph, args.k, args.eps_scale, args.eps0, m, args.cut
+                data["X_graph"], data["F"], args.graph, args.k, args.eps_scale, args.eps0, m, args.cut,
+                args.radius, args.device,
             )
             for emb in args.embedding:
                 if emb == "chart":
@@ -331,7 +377,7 @@ def run_manifold(args) -> pd.DataFrame:
                 row = evaluate_embedding(
                     res, Y, J, data["truth"], m,
                     {"dataset": args.dataset, "embedding": emb, "N": N, "seed": seed, "beta": args.beta,
-                     "graph": args.graph, "k": args.k, "eps_scale": args.eps_scale, "eps0": args.eps0, "cut": args.cut,
+                     "graph": args.graph, "k": args.k, "eps_scale": args.eps_scale, "eps0": args.eps0, "cut": args.cut, "radius": args.radius,
                      "eps": eps, "n_edges": edges.shape[0]},
                 )
                 row["spearman_edge_ratio"] = edge_asymmetry_spearman(res, Y, edges, dst, N)
@@ -453,6 +499,9 @@ def main():
     parser.add_argument("--eps0", type=float, default=0.5, help="Radius graph: eps = eps0 (log N / N)^(1/(m+4)).")
     parser.add_argument("--cut", type=float, default=3.0,
                         help="Radius graph: Euclidean cutoff in units of eps (>= 3 / (1 - ||b||) for a Randers metric).")
+    parser.add_argument("--radius", type=float, default=None,
+                        help="Radius graph with this fixed Euclidean radius, eps chosen so that the kernel is not truncated.")
+    parser.add_argument("--device", default="cpu", help="Device for the Finsler distances (cpu, mps, cuda).")
     parser.add_argument("--embedding", nargs="+", default=["chart", "isomap"], choices=["chart", "isomap"])
     # DiSBM
     parser.add_argument("--n-disbm", type=int, default=1000)
@@ -474,7 +523,8 @@ def main():
     elif args.graph == "knn":
         suffix = f"_knn{args.k}_scale{args.eps_scale}_beta{args.beta}"
     else:
-        suffix = f"_radius_eps0{args.eps0}_cut{args.cut}_beta{args.beta}"
+        suffix = (f"_radius{args.radius}_beta{args.beta}" if args.radius is not None
+                  else f"_radius_eps0{args.eps0}_cut{args.cut}_beta{args.beta}")
     path = args.out / f"{args.dataset}{suffix}.csv"
     df.to_csv(path, index=False)
     print(f"\nSaved {len(df)} runs to {path}\nMedian ± IQR over seeds:")
