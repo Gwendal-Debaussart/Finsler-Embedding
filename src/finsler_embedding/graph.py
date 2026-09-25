@@ -347,7 +347,13 @@ def build_data_radius(
     dst = construct_distance_matrix(X_graph, edges, randers, use_approx=True, pbar=True)
     delta_norm = (X_graph[edges[:, 1]] - X_graph[edges[:, 0]]).norm(dim=1)
     rho = (dst.detach() / delta_norm).min().item()
-    eps = rho * radius / 3
+    # Bigger eps leads to better performances.
+    N = X_graph.shape[0]
+    dst_mat = torch.full((N, N), float("inf"))
+    dst_mat[edges[:, 0], edges[:, 1]] = dst.detach()
+    eps = dst_mat.kthvalue(10, dim=1).values.median().item()
+    if 3 * eps > rho * radius:
+        return build_data_radius(X_graph, 1.05 * 3 * eps / rho, randers)
     return edges, dst, eps
 
 

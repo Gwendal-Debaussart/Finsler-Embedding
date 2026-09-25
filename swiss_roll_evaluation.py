@@ -1,4 +1,6 @@
+import itertools
 import torch
+import numpy as np
 import pandas as pd
 
 from finsler_embedding.eval_operators import main as main_eval
@@ -6,11 +8,12 @@ from finsler_embedding.eval_operators import EvalOperators
 
 
 def main():
-    beta_list = torch.linspace(0.01, 0.9, 10)
+    beta_list = torch.tensor([0.1, 0.3, 0.5, 0.7, 0.9])
     N_list = [1000, 2000, 4000]
     df_list = []
-    for beta in beta_list:
-        for N in N_list:
+    for beta, N, seed in itertools.product(beta_list, N_list, range(3)):
+            torch.manual_seed(seed)
+            np.random.seed(seed)
             config: EvalOperators = EvalOperators(
                 dataset="swiss_roll",
                 n=N,
@@ -25,6 +28,7 @@ def main():
                 radius=5.0, # <- pas sur du tout de la valeur ici 
             )
             df = main_eval(config)
+            df["seed"] = seed
             df_list.append(df)
             pd.concat(df_list, ignore_index=True).to_csv(
                 "./results/eval_operators_swiss_roll.csv", index=False
