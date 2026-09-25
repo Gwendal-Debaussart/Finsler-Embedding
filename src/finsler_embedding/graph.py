@@ -1,9 +1,11 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from sklearn.neighbors import kneighbors_graph
+from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
 
 from geodesic_toolbox import RandersMetrics, GEORCEFinsler
+
+from finsler_embedding.operators import apply_gaussian_kernel
 
 
 def symmetrize_edges(edges: torch.Tensor) -> torch.Tensor:
@@ -277,3 +279,158 @@ def construct_distance_matrix(
     else:
         dst_mat = georce_distance_matrix(X, edges, randers, batch_size=batch_size, pbar=pbar)
     return dst_mat
+
+
+def build_data_knn(
+    X_graph: torch.Tensor,
+    k: int,
+    randers: RandersMetrics,
+    eps_scale: float,
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """
+    Builds a k-nearest neighbors graph and computes the distance matrix and epsilon value.
+
+    Parameters:
+    ----------
+    X_graph : torch.Tensor (N, D)
+        The input points.
+    k : int
+        The number of neighbors to consider for each point.
+    randers : RandersMetrics
+        The Randers metric to use for distance computation.
+    eps_scale : float
+        The scale factor for computing epsilon.
+
+    Returns:
+    -------
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    dst : torch.Tensor (M,)
+        The distance matrix corresponding to the edges.
+    eps : float
+        The computed epsilon value based on the distance matrix and scale factor.
+    """
+    edges = get_knn_graph(X_graph, n_neighbors=k, device="cpu")
+    dst = construct_distance_matrix(X_graph, edges, randers, use_approx=True, pbar=True)
+    eps = compute_epsilon_empirical(dst, scale=eps_scale)
+    return edges, dst, eps
+
+
+def build_data_radius(
+    X_graph: torch.Tensor,
+    radius: float,
+    randers: RandersMetrics,
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """
+    Builds a radius graph and computes the distance matrix and epsilon value.
+
+    Parameters:
+    ----------
+    X_graph : torch.Tensor (N, D)
+        The input points.
+    radius : float
+        The radius to consider for each point.
+    randers : RandersMetrics
+        The Randers metric to use for distance computation.
+
+    Returns:
+    -------
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    dst : torch.Tensor (M,)
+        The distance matrix corresponding to the edges.
+    eps : float
+        The computed epsilon value based on the distance matrix and scale factor.
+    """
+    A = radius_neighbors_graph(X_graph.detach().numpy(), radius=radius, include_self=False)
+    edges = symmetrize_edges(torch.from_numpy(np.array(A.nonzero()).T))
+    dst = construct_distance_matrix(X_graph, edges, randers, use_approx=True, pbar=True)
+    delta_norm = (X_graph[edges[:, 1]] - X_graph[edges[:, 0]]).norm(dim=1)
+    rho = (dst.detach() / delta_norm).min().item()
+    eps = rho * radius / 3
+    return edges, dst, eps
+
+
+def build_graph(
+    X_graph: torch.Tensor,
+    F: RandersMetrics,
+    graph_type: str,
+    k: int,
+    eps_scale: float,
+    eps0: float,
+    m: int,
+    cut: float = 3.0,
+    radius: float = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """
+    Constructs the graph data and the directed gaussian kernel W from the low-dimensional
+    embedding X_graph and the Randers metric F.
+    The graph type ("knn" or "radius") determines the connectivity.
+
+    If graph_type is "knn", the graph uses k-nearest neighbors. Epsilon is computed based on
+    the distance matrix and `eps_scale`.
+
+    If graph_type is "radius":
+        - If `radius` is None, the graph uses a dynamically calculated radius based on
+            `eps0` and `compute_epsilon_rate`.
+        - If `radius` is provided, the graph uses this fixed Euclidean radius.
+
+    The distance matrix is computed using straight line approximation.
+
+    Notes on Radius Graph Construction:
+    - For the general radius graph, edges connect pairs with Euclidean distance < `cut * eps`.
+        The kernel is negligible past d_F = 3 eps. For Randers metrics, this vanishing
+        point is related to the Euclidean distance 3 eps / (1 - ||b||). Using
+        `cut >= 3 / (1 - ||b||)` helps prevent kernel truncation.
+    - For a fixed Euclidean radius, edges connect pairs with distance < `radius`.
+      Epsilon is set such that $d_F < 3 text{eps}$ implies the pair is within the radius,
+      specifically $text{eps} = rho cdot text{radius} / 3$, where $rho = min(d_F / |x_j - x_i|)$
+      over the edges.
+
+    Parameters:
+    ----------
+    X_graph : torch.Tensor (N, D)
+        The input points.
+    F : RandersMetrics
+        The Randers metric to use for distance computation.
+    graph_type : str
+        The type of graph to construct ("knn" or "radius").
+    k : int
+        The number of neighbors to consider for each point (used if graph_type is "knn").
+    eps_scale : float
+        The scale factor for computing epsilon (used if graph_type is "knn").
+    eps0 : float
+        The base epsilon value (used if graph_type is "radius" and radius is None).
+    m : int
+        The dimension of the data (used if graph_type is "radius" and radius is None).
+    cut : float
+        The multiplier for the radius when graph_type is "radius" and radius is None. Default is 3.0.
+    radius : float
+        The fixed Euclidean radius to use for graph construction (used if graph_type is "radius"). Default is None.
+
+    Returns:
+    -------
+    W : torch.Tensor (N, N)
+        The directed gaussian kernel matrix.
+    edges : torch.Tensor (M, 2)
+        The edges of the graph, where each edge is represented by a pair of indices (i, j) indicating that point j is a neighbor of point i.
+    dst : torch.Tensor (M,)
+        The distance matrix corresponding to the edges.
+    eps : float
+        The computed epsilon value based on the distance matrix and scale factor.
+    """
+    VALID_GRAPHS = ["knn", "radius"]
+    if graph_type not in VALID_GRAPHS:
+        raise ValueError(f"Unknown graph {graph_type!r}, must be one of {VALID_GRAPHS!r}")
+    N = X_graph.shape[0]
+    if graph_type == "knn":
+        edges, dst, eps = build_data_knn(X_graph, k, F, eps_scale)
+    elif graph_type == "radius":
+        if radius is None:
+            eps = eps0 * compute_epsilon_rate(N, m)
+            radius = cut * eps
+            edges, dst, _ = build_data_radius(X_graph, radius, F)
+        else:
+            edges, dst, eps = build_data_radius(X_graph, radius, F)
+    W = apply_gaussian_kernel(edges, dst.detach(), eps, N)
+    return W, edges, dst.detach(), eps
