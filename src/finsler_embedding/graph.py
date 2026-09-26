@@ -354,7 +354,8 @@ def build_data_radius(
     eps = dst_mat.kthvalue(10, dim=1).values.median().item()
     if 3 * eps > rho * radius:
         return build_data_radius(X_graph, 1.05 * 3 * eps / rho, randers)
-    return edges, dst, eps
+    keep = dst.detach() < 3 * eps
+    return edges[keep], dst[keep], eps
 
 
 def build_graph(
