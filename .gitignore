@@ -4,3 +4,4 @@ __pycache__/*
 results/*
 *.pdf
 *.png
+thesis_figures/*
