@@ -167,8 +167,13 @@ def distance_matrix_straight_line(
         dx = x1 - x0
         x = x0[:, None, :] + t[None, :, None] * dx[:, None, :]
         v = dx[:, None, :].expand(-1, num_quad_points, -1)
-        F = randers(x.reshape(-1, X.shape[-1]), v.reshape(-1, X.shape[-1]))
-        F = F.reshape(x.shape[0], num_quad_points)
+        # Some metrics (for example SlopeMetrics) obtain their coefficients by
+        # differentiating with respect to the evaluation points.
+        x = x.reshape(-1, X.shape[-1]).detach().requires_grad_(True)
+        v = v.reshape(-1, X.shape[-1])
+        with torch.enable_grad():
+            F = randers(x, v)
+        F = F.reshape(batch_edges.shape[0], num_quad_points)
         dst = torch.trapezoid(F, t, dim=1)
 
         dst_mat[start : start + batch_edges.shape[0]] = dst

@@ -81,6 +81,8 @@ uv run python -m finsler_embedding.experiments.matsumoto.runner \
   --n 100 --seeds 1 --embedding chart
 ```
 
+Use `--out` to choose a different output directory.
+
 ### Directed stochastic block model (DiSBM)
 
 The DiSBM sweep measures recovery of the direction of the asymmetric flow:

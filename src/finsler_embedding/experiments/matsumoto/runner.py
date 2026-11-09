@@ -1,6 +1,7 @@
 """Run quantitative evaluations on the Matsumoto dataset."""
 
 import argparse
+from pathlib import Path
 
 from finsler_embedding.experiments.legacy.evaluation import run_manifold
 
@@ -25,7 +26,7 @@ def parse_args() -> MatsumotoConfig:
     return MatsumotoConfig(
         n=args.n, seeds=args.seeds, graph=args.graph, k=args.k,
         eps_scale=args.eps_scale, eps0=args.eps0, cut=args.cut, radius=args.radius,
-        device=args.device, embeddings=tuple(args.embedding), output=args.out,
+        device=args.device, embeddings=tuple(args.embedding), output=Path(args.out),
     )
 
 
