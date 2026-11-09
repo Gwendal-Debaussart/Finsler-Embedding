@@ -346,7 +346,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "geodesic-toolbox", editable = "../geodesic_toolbox" },
+    { name = "geodesic-toolbox", git = "https://github.com/Theaublanchard/geodesic_toolbox?rev=777867c433529ca2595f289f0d5312336170f6c4" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "nbformat", specifier = ">=5.11.1" },
@@ -419,7 +419,7 @@ wheels = [
 [[package]]
 name = "geodesic-toolbox"
 version = "0.1.0"
-source = { editable = "../geodesic_toolbox" }
+source = { git = "https://github.com/Theaublanchard/geodesic_toolbox?rev=777867c433529ca2595f289f0d5312336170f6c4#777867c433529ca2595f289f0d5312336170f6c4" }
 dependencies = [
     { name = "einops" },
     { name = "kmedoids" },
@@ -431,20 +431,6 @@ dependencies = [
     { name = "torchcurves" },
     { name = "torchdiffeq" },
     { name = "tqdm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "einops", specifier = ">=0.8.2" },
-    { name = "kmedoids", specifier = ">=0.5.5" },
-    { name = "networkx", specifier = ">=3.6.1" },
-    { name = "numpy", specifier = ">=2.5.2" },
-    { name = "scikit-learn", specifier = ">=1.9.0" },
-    { name = "scipy", specifier = ">=1.18.1" },
-    { name = "torch", specifier = ">=2.13.0" },
-    { name = "torchcurves", specifier = ">=0.3.1" },
-    { name = "torchdiffeq", specifier = ">=0.2.5" },
-    { name = "tqdm", specifier = ">=4.70.0" },
 ]
 
 [[package]]

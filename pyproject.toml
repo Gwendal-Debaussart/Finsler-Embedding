@@ -29,4 +29,4 @@ requires = ["uv_build>=0.12.7,<=0.13.1"]
 build-backend = "uv_build"
 
 [tool.uv.sources]
-geodesic-toolbox = { path = "../geodesic_toolbox", editable = true }
+geodesic-toolbox = { git = "https://github.com/Theaublanchard/geodesic_toolbox", rev = "777867c433529ca2595f289f0d5312336170f6c4" }

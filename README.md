@@ -20,16 +20,8 @@ experiment runners. The main pipeline is:
 
 The project requires Python 3.13 or newer and uses
 [uv](https://docs.astral.sh/uv/) for environment and dependency management.
-The `geodesic-toolbox` dependency is configured as an editable local
-dependency. Clone the two repositories next to each other:
-
-```text
-parent/
-├── Finsler-Embedding/
-└── geodesic_toolbox/
-```
-
-Then install the project from the repository root:
+The `geodesic-toolbox` dependency is installed from a pinned commit of its
+GitHub repository. Install the project from the repository root:
 
 ```bash
 cd Finsler-Embedding
