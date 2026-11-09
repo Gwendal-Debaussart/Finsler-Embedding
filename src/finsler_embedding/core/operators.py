@@ -1,81 +1,18 @@
 import torch
-from scipy.special import factorial
-from math import gamma as _gamma
-from tqdm import tqdm
-from torchvision.ops import MLP
-
-
-def gaussian_kernel(edges, dst_edges, eps: float, N: int, m: int = 2):
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-
-    W = torch.zeros_like(dst_mat)
-    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] ** 2 / eps**2)
-    W.fill_diagonal_(0)
-
-    mu_0 = 1 / 2 * torch.lgamma(torch.tensor(m) / 2).exp()
-    mu_1 = 1 / 2 * torch.lgamma(torch.tensor(m + 1) / 2).exp()
-
-    return W, mu_0, mu_1
-
-
-def apply_gaussian_kernel(edges, dst_edges, eps: float, N: int):
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-
-    W = torch.zeros_like(dst_mat)
-    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] ** 2 / eps**2)
-    W.fill_diagonal_(0)
-
-    return W
-
-
-def laplacian_kernel(
-    edges: torch.Tensor, dst_edges: torch.Tensor, eps: float, N: int, m: int = 2
-):
-    dst_mat = torch.zeros((N, N), device=dst_edges.device, dtype=dst_edges.dtype)
-    dst_mat[edges[:, 0], edges[:, 1]] = dst_edges
-
-    W = torch.zeros_like(dst_mat)
-    W[edges[:, 0], edges[:, 1]] = torch.exp(-dst_mat[edges[:, 0], edges[:, 1]] / eps)
-    W.fill_diagonal_(0)
-
-    mu_0 = factorial(m - 1)
-    mu_1 = factorial(m)
-    return W, mu_0, mu_1
-
-
-def kernel_moments(m: int, kernel: str = "gaussian"):
-    """
-    Compute the moments of the kernel function K(r).
-    If the kernel is Gaussian, K(r) = exp(-r^2 / 2), the moments are given by:
-        mu_n = 1/2 * Gamma((m+n)/2)
-    If the kernel is exponential, K(r) = exp(-r), the moments are given by:
-        mu_n = Gamma(m+n)
-
-    Parameters:
-    ----------
-    m : int
-        The dimension of the space.
-    kernel : str
-        The type of kernel to use. Supported values are "gaussian" and "exponential".
-
-    Returns:
-    -------
-    mu_0, mu_1, mu_2 : tuple of floats
-        The moments of the kernel function K(r) for n = 0, 1, 2, respectively.
-    """
-    if kernel == "gaussian":
-        return tuple(1 / 2 * _gamma((m + n) / 2) for n in (0, 1, 2))
-    if kernel == "exponential":
-        return tuple(_gamma(m + n) for n in (0, 1, 2))
-    raise ValueError(f"unknown kernel {kernel!r}")
 
 
 def get_Q_inv_theta(W: torch.Tensor, theta: int = 1):
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError("W must be a square matrix")
+    if not torch.isfinite(W).all() or (W < 0).any():
+        raise ValueError("W must contain finite, nonnegative values")
+    if not torch.isfinite(torch.as_tensor(theta)) or theta < 0:
+        raise ValueError("theta must be finite and nonnegative")
     D = torch.sum(W, dim=1)
     D_prime = torch.sum(W, dim=0)
     Q = (D + D_prime) / 2
+    if (Q <= 0).any():
+        raise ValueError("every node must have a positive symmetrized degree")
     Q_theta = Q**theta
     Q_inv_theta = 1 / Q_theta
     Q_inv_theta = torch.diag_embed(Q_inv_theta)
@@ -90,7 +27,13 @@ def get_W_thetas(W: torch.Tensor, Q_inv_theta: torch.Tensor):
 
 
 def construct_P_thetas(W_theta_s: torch.Tensor, W_theta_a: torch.Tensor):
+    if W_theta_s.shape != W_theta_a.shape or W_theta_s.ndim != 2:
+        raise ValueError(
+            "symmetric and antisymmetric kernels must be square matrices of equal shape"
+        )
     D_theta_s = torch.sum(W_theta_s, dim=1)
+    if (D_theta_s <= 0).any() or not torch.isfinite(D_theta_s).all():
+        raise ValueError("every node must have a positive symmetric degree")
     D_theta_a = torch.sum(W_theta_a, dim=1)
     D_theta_a = torch.diag_embed(D_theta_a)
     D_theta_s_inv = 1 / D_theta_s
@@ -102,6 +45,8 @@ def construct_P_thetas(W_theta_s: torch.Tensor, W_theta_a: torch.Tensor):
 
 
 def construct_operators(W: torch.Tensor, eps: float, theta: int = 1):
+    if not torch.isfinite(torch.as_tensor(eps)) or eps <= 0:
+        raise ValueError("eps must be finite and strictly positive")
     Q_inv_theta = get_Q_inv_theta(W, theta)
     W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
     P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
@@ -163,20 +108,18 @@ def truncated_pinv(A: torch.Tensor, rank: int, rcond: float = 1e-10):
         The truncated pseudo-inverse of A.
         It verifies that A @ pinv_A @ A = A and pinv_A @ A @ pinv_A = pinv_A, and has rank at most `rank`.
     """
+    if A.ndim < 2 or A.shape[-1] != A.shape[-2]:
+        raise ValueError("A must contain square matrices")
+    if not isinstance(rank, int) or not 1 <= rank <= A.shape[-1]:
+        raise ValueError("rank must be an integer between 1 and the matrix dimension")
+    if not torch.isfinite(torch.as_tensor(rcond)) or rcond < 0:
+        raise ValueError("rcond must be finite and nonnegative")
     evals, evecs = torch.linalg.eigh(A)  # ascending
     evals = evals[..., -rank:]
     evecs = evecs[..., -rank:]
     keep = evals > rcond * evals[..., -1:].clamp_min(0).abs()
     inv = torch.where(keep, 1.0 / evals.clamp_min(rcond), torch.zeros_like(evals))
     return evecs @ torch.diag_embed(inv) @ evecs.transpose(-1, -2)
-
-
-def randers_constants(m: int, kernel: str = "gaussian"):
-    """c_2, C and kappa_K"""
-    mu0, mu1, mu2 = kernel_moments(m, kernel)
-    c_2 = mu2 / (2.0 * m * mu0)  # [FIX-F] was 4*mu2/(m*mu0)
-    C = (m + 1) * mu1 / (m * mu0)
-    return c_2, C, c_2 / C**2
 
 
 def leading_eigenvectors(W_s: torch.Tensor, n_components: int) -> torch.Tensor:
@@ -195,62 +138,11 @@ def leading_eigenvectors(W_s: torch.Tensor, n_components: int) -> torch.Tensor:
 def randers_approximation(
     W: torch.Tensor, epsilon: float, X_low=None, m: int = 2, kernel_type: str = "gaussian"
 ):
-
-    Q_inv_theta = get_Q_inv_theta(W, theta=1)
-    W_theta_s, W_theta_a = get_W_thetas(W, Q_inv_theta)
-    P_theta_s, P_theta_a = construct_P_thetas(W_theta_s, W_theta_a)
-    L_theta_s = 1 / epsilon**2 * P_theta_s
-    L_theta_a = 1 / epsilon * P_theta_a
-
-    c_2, C, kappa = randers_constants(m, kernel=kernel_type)
-
     if X_low is None:
+        q_inv_theta = get_Q_inv_theta(W, theta=1)
+        W_theta_s, _ = get_W_thetas(W, q_inv_theta)
         X_low = leading_eigenvectors(W_theta_s, m)
+    from .randers import reconstruct_randers
 
-    Gamma = carre_du_champ(L_theta_s, X_low)
-    V = L_theta_a @ X_low
-    Gamma_pinv = truncated_pinv(Gamma, rank=m)
+    return reconstruct_randers(W, epsilon, X_low, m, kernel_type)
 
-    c_norm_sq = kappa * torch.einsum("nij,ni,nj->n", Gamma_pinv, V, V)
-    admissible = c_norm_sq < 1.0 / (m + 3)
-
-    c_tilde = (kappa**0.5) * V
-    H_tilde_inv = Gamma - (m + 2) * kappa * torch.einsum("ni,nj->nij", V, V)
-    H_tilde = truncated_pinv(H_tilde_inv, rank=m)
-    lambda_tilde = 1.0 - torch.einsum("nij,ni,nj->n", H_tilde, c_tilde, c_tilde)
-
-    return {
-        "W": W,
-        "L_theta_s": L_theta_s,
-        "L_theta_a": L_theta_a,
-        "Gamma": Gamma,
-        "V": V,
-        "Gamma_pinv": Gamma_pinv,
-        "c_norm_sq": c_norm_sq,
-        "admissible": admissible,
-        "c_tilde": c_tilde,
-        "H_tilde": H_tilde,
-        "lambda_tilde": lambda_tilde,
-        "c_2": c_2,
-        "C": C,
-        "kappa": kappa,
-        "X_low": X_low,
-    }
-
-
-def interpolate_V(X_low: torch.Tensor, V: torch.Tensor, dim: int, n_epochs: int = 500):
-    # Train a NN to interpolate V
-    model = MLP(in_channels=dim, hidden_channels=[64, 64, dim])
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    loss_list = []
-    pbar = tqdm(range(n_epochs))
-    for epoch in pbar:
-        optimizer.zero_grad()
-        V_pred = model(X_low)
-        loss = torch.nn.functional.mse_loss(V_pred, V)
-        loss.backward()
-        optimizer.step()
-        pbar.set_description(f"Loss: {loss.item():.4f}")
-        loss_list.append(loss.item())
-    return model, loss_list

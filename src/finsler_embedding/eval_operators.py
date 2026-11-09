@@ -10,9 +10,10 @@ from sklearn.manifold import Isomap
 
 from geodesic_toolbox import RandersMetrics, IdentityCoMetric, CentroidsCometric, SlopeMetrics
 
-from finsler_embedding.graph import build_graph
+from finsler_embedding.experiments.graph import build_graph
 from finsler_embedding.omega import *
-from finsler_embedding.operators import randers_approximation, randers_constants
+from finsler_embedding.core.kernels import randers_constants
+from finsler_embedding.core.operators import randers_approximation
 
 
 @dataclass
@@ -42,7 +43,9 @@ class dataset_info:
     X_graph: torch.Tensor
     # Low-dimensional chart coordinates (N, m)
     X_chart: torch.Tensor
-    # Tangent basis of the subspace where the Randers metric is restricted (N, D, m)
+    # Local tangent-frame matrix: its m columns are an orthonormal basis of the
+    # m-dimensional manifold tangent space expressed in ambient R^D coordinates.
+    # It converts intrinsic tangent coordinates u to ambient vectors P @ u.
     P: torch.Tensor
     F: RandersMetrics
     # Centroid of the Randers metric restricted to the tangent spaces spanned by P, in tangent coordinates (N, m)
@@ -55,7 +58,11 @@ class dataset_info:
 
 def tangent_basis(X: torch.Tensor, m: int, k: int = 15) -> torch.Tensor:
     """
-    Compute an orthonormal basis of the tangent spaces at each point in X using local PCA.
+    Compute local tangent-frame matrices using local PCA.
+
+    The returned matrix ``P[n]`` has shape ``(D, m)``. Its columns are an
+    orthonormal basis of the tangent space at ``X[n]``, allowing the
+    intrinsically m-dimensional metric to be represented in ambient R^D.
 
     Parameters:
     ----------
@@ -95,7 +102,12 @@ def compute_unit_ball_info(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute the centroid c and the Binet--Legendre cometric g_bl_inv of the Randers metric
-    restricted to the tangent spaces spanned by P, in tangent coordinates.
+    restricted to the tangent spaces spanned by P, in intrinsic tangent coordinates.
+
+    Here ``P`` is the local change-of-coordinates matrix from intrinsic
+    tangent coordinates to ambient coordinates; ``P.T @ A @ P`` and
+    ``P.T @ b`` therefore restrict the ambient metric and one-form to the
+    tangent space.
 
     Parameters:
     ----------
@@ -190,8 +202,9 @@ def empirical_jacobian(
     X: torch.Tensor, Y: torch.Tensor, P: torch.Tensor, k: int = 15
 ) -> torch.Tensor:
     """
-    Computes the Jacobian of an embedding Y with respect to the input X in the tangent coordinates defined by P
-    using local least squares on the k-nearest neighbors.
+    Computes the Jacobian of an embedding Y with respect to intrinsic tangent
+    coordinates defined by P using local least squares on the k-nearest
+    neighbors.
 
     Parameters:
     ----------
@@ -402,8 +415,9 @@ def embed_data(data: dataset_info, config: EvalOperators):
     N, D, m = data.P.shape
     if config.embedding_type == "chart":
         Y = data.X_chart.detach().clone()
-        # J = torch.eye(m).expand(N, m, m).clone()
-        J = data.P  # ?
+        # Y is the ambient coordinate embedding. For an intrinsic tangent
+        # displacement u, the ambient displacement is P @ u, so dY/du = P.
+        J = data.P
     elif config.embedding_type == "isomap":
         isomap = Isomap(n_neighbors=config.k, n_components=m)
         Y = torch.from_numpy(isomap.fit_transform(data.X_graph.numpy())).float()
@@ -430,8 +444,8 @@ def evaluate_embedding(
     c_norm_ref = torch.einsum("ni,nij,nj->n", c, g_bl, c)
 
     # Keep only the admissible samples
-    adm = res["admissible"]
-    V, Gamma, c_norm = res["V"][adm], res["Gamma"][adm], res["c_norm_sq"][adm]
+    adm = res.admissible
+    V, Gamma, c_norm = res.drift[adm], res.carré_du_champ[adm], res.drift_norm_squared[adm]
     V_ref, Gamma_ref, c_norm_ref = V_ref_all[adm], Gamma_ref[adm], c_norm_ref[adm]
 
     cos = torch.nn.functional.cosine_similarity(V, V_ref, dim=1)
@@ -445,9 +459,9 @@ def evaluate_embedding(
     # Same error over all samples: restricting to the admissible ones selects the samples whose
     # (noisy) estimate is low, and biases the error when ||c||^2_{g_BL} is close to 1 / (m + 3)
     c_norm_all = torch.einsum("ni,nij,nj->n", c, g_bl, c)
-    ratio_cnorm_all = res["c_norm_sq"] / c_norm_all
-    relerr_c_norm_all = (res["c_norm_sq"] - c_norm_all).abs() / c_norm_all
-    cos_all = torch.nn.functional.cosine_similarity(res["V"], V_ref_all, dim=1)
+    ratio_cnorm_all = res.drift_norm_squared / c_norm_all
+    relerr_c_norm_all = (res.drift_norm_squared - c_norm_all).abs() / c_norm_all
+    cos_all = torch.nn.functional.cosine_similarity(res.drift, V_ref_all, dim=1)
 
     def med(t: torch.Tensor) -> float:
         return t.median().item()

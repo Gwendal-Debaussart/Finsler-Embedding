@@ -9,7 +9,7 @@ the kernel,
 
 Missing runs are computed with evaluate.py, existing ones are read from <out>.
 
-    python -m finsler_embedding.swiss_roll_table [--betas 0.1 0.3 0.5 0.7 0.9] [--n-list 1000 2000 4000]
+    python -m finsler_embedding.experiments.swiss_roll.table [--betas 0.1 0.3 0.5 0.7 0.9] [--n-list 1000 2000 4000]
 """
 
 import argparse
@@ -22,6 +22,59 @@ import pandas as pd
 TABLES = {  # table -> [(csv column, decimals)]
     "main": [("relerr_c_norm_all", 2), ("cos_V_all", 2), ("admissible", 2)],
 }
+
+
+def generate_table(
+    df: pd.DataFrame,
+    betas: list[float],
+    sample_sizes: list[int],
+    output: Path,
+    embedding: str = "isomap",
+) -> Path:
+    """Aggregate evaluation results and save the paper table as LaTeX.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Per-run evaluation results.
+    betas : list of float
+        Drift strengths represented by the table rows.
+    sample_sizes : list of int
+        Sample sizes represented by the table columns.
+    output : pathlib.Path
+        Destination for the generated LaTeX table.
+    embedding : str, default="isomap"
+        Embedding results to include.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the generated LaTeX table.
+    """
+    required = {"embedding_type", "n", "beta"}
+    missing = required - set(df.columns)
+    missing.update(column for column, _ in TABLES["main"] if column not in df.columns)
+    if missing:
+        raise ValueError(f"evaluation results are missing columns: {sorted(missing)}")
+    filtered = df[
+        (df["embedding_type"] == embedding)
+        & df["n"].isin(sample_sizes)
+    ].rename(columns={"n": "N"})
+    lines: list[str] = []
+    for name, columns in TABLES.items():
+        grouped = filtered.groupby(["beta", "N"])[[column for column, _ in columns]]
+        median = grouped.median()
+        lines.append(f"% {name} table")
+        for beta in betas:
+            cells = [f"${beta:g}$"]
+            for column, decimals in columns:
+                cells.extend(
+                    f"${median.loc[(beta, n), column]:.{decimals}f}$"
+                    for n in sample_sizes
+                )
+            lines.append("    " + " & ".join(cells) + r" \\")
+    output.write_text("\n".join(lines) + "\n")
+    return output
 
 
 def load(beta: float, args) -> pd.DataFrame:
@@ -49,16 +102,9 @@ def main():
     args = parser.parse_args()
 
     df = pd.concat([load(beta, args) for beta in args.betas])
-    df = df[(df.embedding == args.embedding) & df.N.isin(args.n_list)]
-    for name, columns in TABLES.items():
-        g = df.groupby(["beta", "N"])[[c for c, _ in columns]]
-        median, iqr = g.median(), g.quantile(0.75) - g.quantile(0.25)
-        print(f"\n% {name} table, max interquartile range over seeds: {iqr.max().round(3).to_dict()}")
-        for beta in args.betas:
-            cells = [f"${beta:g}$"]
-            for c, d in columns:
-                cells += [f"${median.loc[(beta, N), c]:.{d}f}$" for N in args.n_list]
-            print("    " + " & ".join(cells) + r" \\")
+    output = args.out / "swiss_roll_table.tex"
+    generate_table(df, args.betas, args.n_list, output, args.embedding)
+    print(output.read_text())
 
 
 if __name__ == "__main__":

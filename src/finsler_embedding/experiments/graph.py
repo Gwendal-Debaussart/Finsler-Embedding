@@ -5,7 +5,7 @@ from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
 
 from geodesic_toolbox import RandersMetrics, GEORCEFinsler
 
-from finsler_embedding.operators import apply_gaussian_kernel
+from finsler_embedding.core.kernels import gaussian_kernel
 
 
 def symmetrize_edges(edges: torch.Tensor) -> torch.Tensor:
@@ -176,8 +176,58 @@ def distance_matrix_straight_line(
     return dst_mat
 
 
-def _randers_straight_line_pairs(X, edges, randers, t, batch_size, pbar):
-    """Straight-line Randers distances of the edges, computing each pair {i, j} once for both directions."""
+def _randers_straight_line_pairs(
+    X: torch.Tensor,
+    edges: torch.Tensor,
+    randers: RandersMetrics,
+    t: torch.Tensor,
+    batch_size: int,
+    pbar: bool,
+) -> torch.Tensor:
+    """Compute both directed distances for each unordered edge pair.
+
+    The Randers metric is evaluated once for the segment oriented from the
+    lower-indexed endpoint to the higher-indexed endpoint. Reversing the
+    velocity changes the sign of the one-form contribution, so the forward
+    and backward distances are recovered from the same quadrature values.
+
+    Parameters
+    ----------
+    X : torch.Tensor (N, D)
+        Input points.
+    edges : torch.Tensor (M, 2)
+        Directed edge indices. Each row contains a source and destination
+        index into ``X``.
+    randers : RandersMetrics
+        Randers metric providing ``base_cometric.metric`` and ``beta_form``.
+    t : torch.Tensor (Q,)
+        Quadrature points on the interval ``[0, 1]``.
+    batch_size : int
+        Maximum number of unordered pairs processed per batch before the
+        internal two-direction expansion.
+    pbar : bool
+        Whether to display a progress bar.
+
+    Returns
+    -------
+    torch.Tensor (M,)
+        Directed Randers distances in the same row order as ``edges``.
+
+    Raises
+    ------
+    ValueError
+        If the input tensors do not have compatible shapes or ``batch_size``
+        is not positive.
+    """
+    if X.ndim != 2 or edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError("X must have shape (N, D) and edges must have shape (M, 2)")
+    if t.ndim != 1 or t.numel() == 0:
+        raise ValueError("t must be a non-empty one-dimensional tensor")
+    if not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+    if edges.numel() and ((edges < 0).any() or (edges >= X.shape[0]).any()):
+        raise ValueError("edges contain indices outside the range of X")
+
     N, D = X.shape
     n_quad = t.shape[0]
     # One segment per unordered pair, oriented from the smaller to the larger index
@@ -439,5 +489,5 @@ def build_graph(
             edges, dst, _ = build_data_radius(X_graph, radius, F)
         else:
             edges, dst, eps = build_data_radius(X_graph, radius, F)
-    W = apply_gaussian_kernel(edges, dst.detach(), eps, N)
+    W, _, _ = gaussian_kernel(edges, dst.detach(), eps, N)
     return W, edges, dst.detach(), eps

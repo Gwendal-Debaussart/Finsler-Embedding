@@ -9,24 +9,24 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "geodesic-toolbox>=0.1.0",
+    "geodesic-toolbox",
     "ipykernel>=7.3.0",
     "matplotlib>=3.11.1",
     "nbformat>=5.11.1",
     "networkx>=3.6.1",
     "pandas>=3.0.5",
     "plotly>=7.1.0",
+    "pytest>=9.2.0",
     "seaborn>=0.13.2",
     "torchvision>=0.29.0",
 ]
 
 [project.scripts]
-finsler-embedding = "finsler_embedding:main"
+finsler-embedding = "finsler_embedding.evaluate:main"
 
 [build-system]
-requires = ["uv_build>=0.12.7,<0.13.0"]
+requires = ["uv_build>=0.12.7,<=0.13.1"]
 build-backend = "uv_build"
 
 [tool.uv.sources]
-# geodesic-toolbox = { git = "https://github.com/Theaublanchard/geodesic_toolbox" }
 geodesic-toolbox = { path = "../geodesic_toolbox", editable = true }

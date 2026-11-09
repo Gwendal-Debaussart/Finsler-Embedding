@@ -16,29 +16,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from finsler_embedding.evaluate import disbm_direction
+from finsler_embedding.experiments.disbm import DiSBMConfig, EmbeddingConfig, run_sweep
 
 SERIES = "#2a78d6"  # categorical slot 1 of the reference palette (validated)
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
 
 def sweep(p_minus_q, r, K, N, seeds):
-    stats = {"cos": [], "c_norm": []}
-    for d in p_minus_q:
-        p = (1 - r + d) / 2  # p + q = 1 - r
-        cos, c_norm = [], []
-        for seed in range(seeds):
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-            out = disbm_direction(p, r, K, N)
-            cos.append(out["cos_node"].numpy())
-            c_norm.append(out["c_norm"].numpy())
-        for key, vals in (("cos", cos), ("c_norm", c_norm)):
-            vals = np.concatenate(vals)
-            stats[key].append(np.quantile(vals, [0.1, 0.5, 0.9]))
-        print(f"p - q = {d:+.1f}: median cos {stats['cos'][-1][1]:+.3f}, "
-              f"median ||c|| {stats['c_norm'][-1][1]:.3f}", flush=True)
-    return {k: np.array(v) for k, v in stats.items()}
+    model_config = DiSBMConfig(n=N, communities=K, r=r)
+    stats = run_sweep(
+        np.asarray(p_minus_q),
+        model_config,
+        EmbeddingConfig(),
+        seeds,
+    )
+    for delta, cos, c_norm in zip(p_minus_q, stats["cos"], stats["c_norm"]):
+        print(
+            f"p - q = {delta:+.1f}: median cos {cos[1]:+.3f}, "
+            f"median ||c|| {c_norm[1]:.3f}",
+            flush=True,
+        )
+    return stats
 
 
 def panel(ax, x, q, ylabel):
