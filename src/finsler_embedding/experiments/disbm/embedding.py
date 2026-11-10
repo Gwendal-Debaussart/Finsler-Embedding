@@ -9,6 +9,7 @@ from finsler_embedding.core.inputs import from_graph
 from finsler_embedding.experiments.reproducibility import seed_everything
 
 from .disbm import DiSBMConfig, graph_info
+from .finsler_mds import canonical_c_norm, finsler_mds_embedding
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,19 @@ class EmbeddingConfig:
         Number of spectral embedding coordinates.
     bandwidth : float, default=1.0
         Gaussian kernel bandwidth.
+    method : {"spectral", "finsler_mds"}, default="spectral"
+        ``"spectral"`` is the moment-Randers embedding. ``"finsler_mds"`` is the
+        Finsler MDS baseline: the directed hop distances of the graph embedded in
+        a canonical Randers space of dimension ``embedding_dim + 1``, whose last
+        axis carries the constant drift.
+    mds_alpha : float, default=0.5
+        Finsler MDS only: strength of the canonical drift, in ``[0, 1)``.
     """
 
     embedding_dim: int = 2
     bandwidth: float = 1.0
+    method: str = "spectral"
+    mds_alpha: float = 0.5
 
 
 @dataclass
@@ -54,9 +64,11 @@ def run_direction(
     model_config : DiSBMConfig
         Graph generation configuration.
     embedding_config : EmbeddingConfig, default=EmbeddingConfig()
-        Spectral embedding and kernel configuration.
+        Method (moment-Randers spectral embedding or Finsler MDS baseline) and
+        its configuration.
     seed : int or None, optional
-        Seed applied before graph sampling.
+        Seed applied before graph sampling, and used by Finsler MDS for its
+        initial configuration.
 
     Returns
     -------
@@ -74,13 +86,30 @@ def run_direction(
         K=model_config.communities,
         N=model_config.n,
     )
-    result = from_graph(
-        adjacency,
-        embedding_config.bandwidth,
-        theta=1.0,
-        n_components=embedding_config.embedding_dim,
-    )
-    coordinates = result.coordinates
+    if embedding_config.method == "spectral":
+        result = from_graph(
+            adjacency,
+            embedding_config.bandwidth,
+            theta=1.0,
+            n_components=embedding_config.embedding_dim,
+        )
+        coordinates, drift = result.coordinates, result.drift
+        c_norm, admissible = result.drift_norm_squared.sqrt(), result.admissible
+    elif embedding_config.method == "finsler_mds":
+        fit = finsler_mds_embedding(
+            adjacency, embedding_config.embedding_dim, embedding_config.mds_alpha, seed=seed
+        )
+        coordinates = fit.coordinates
+        dim = coordinates.shape[1]
+
+        drift = torch.zeros_like(coordinates)
+        drift[:, -1] = -1.0
+        c_norm = torch.full((coordinates.shape[0],), canonical_c_norm(fit.alpha, dim))
+        admissible = c_norm**2 < 1.0 / (dim + 3)
+    else:
+        raise ValueError(
+            f"method must be 'spectral' or 'finsler_mds', got {embedding_config.method!r}"
+        )
     means = torch.stack(
         [coordinates[labels == k].mean(0) for k in range(model_config.communities)]
     )
@@ -88,15 +117,15 @@ def run_direction(
         (torch.arange(model_config.communities) - 1) % model_config.communities
     ]
     community_drift = torch.stack(
-        [result.drift[labels == k].mean(0) for k in range(model_config.communities)]
+        [drift[labels == k].mean(0) for k in range(model_config.communities)]
     )
     cosine = torch.nn.functional.cosine_similarity
     return DirectionResult(
         q=q,
         cos_community=cosine(community_drift, forward, dim=1),
-        cos_node=cosine(result.drift, forward[labels], dim=1),
-        c_norm=result.drift_norm_squared.sqrt(),
-        admissible=result.admissible,
+        cos_node=cosine(drift, forward[labels], dim=1),
+        c_norm=c_norm,
+        admissible=admissible,
     )
 
 
