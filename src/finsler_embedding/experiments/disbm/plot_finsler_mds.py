@@ -18,15 +18,13 @@ import numpy as np
 from matplotlib.colors import hsv_to_rgb
 from matplotlib.patches import FancyArrowPatch
 from matplotlib.transforms import Bbox
-from mpl_toolkits.mplot3d import proj3d
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from finsler_embedding.experiments.reproducibility import seed_everything
 
 from .disbm import graph_info
 from .finsler_mds import finsler_mds_embedding
 
-INK, MUTED, GRID = "#0b0b0b", "#52514e", "#d4d3ce"
+INK = "#0b0b0b"
 
 
 def embed(delta, r, K, N, alpha, embedding_dim, seed):
@@ -52,51 +50,12 @@ def content_extent(fig):
     return cols.min(), cols.max() + 1, rows.min(), rows.max() + 1
 
 
-def draw_grid(ax, half, half_z, walls=True):
-    """Light grid behind the cloud, with a line per unit of the embedding: the floor, and the two back walls."""
-    ticks = np.arange(-np.floor(half), np.floor(half) + 1)
-    ticks_z = np.arange(np.ceil(-half_z), np.floor(half_z) + 1)
-    z0 = -half_z
-    segments = []
-    for t in np.append(ticks, [-half, half]):  # floor
-        segments += [[(t, -half, z0), (t, half, z0)], [(-half, t, z0), (half, t, z0)]]
-    if walls:  # the walls opposite to the camera: x = -half and y = +half
-        for t in np.append(ticks, [-half, half]):
-            segments += [[(-half, t, z0), (-half, t, half_z)], [(t, half, z0), (t, half, half_z)]]
-        for t in np.append(ticks_z, [-half_z, half_z]):
-            segments += [[(-half, -half, t), (-half, half, t)], [(-half, half, t), (half, half, t)]]
-    ax.add_collection3d(Line3DCollection(segments, colors=GRID, linewidths=0.4, zorder=0))
-
-
-def draw_axes(fig, ax, half, half_z, length=1.5):
-    """The axes x, y and omega, in the units of the embedding, from the left corner of the floor."""
-    width, height = fig.get_size_inches() * fig.dpi
-    fig.canvas.draw()
-
-    def screen(point):  # pixels, origin at the bottom left
-        x, y, _ = proj3d.proj_transform(*point, ax.get_proj())
-        return np.array(ax.transData.transform((x, y)))
-
-    origin = np.array([-half, -half, -half_z])
-    start = screen(origin)
-    for unit, name in zip(np.eye(3), ("$x$", "$y$", r"$\omega$")):
-        head = screen(origin + length * unit)
-        fig.add_artist(FancyArrowPatch(
-            tuple(start / (width, height)), tuple(head / (width, height)), transform=fig.transFigure,
-            arrowstyle="-|>", mutation_scale=8, color=INK, linewidth=1.0, shrinkA=0, shrinkB=0,
-        ))
-        direction = (head - start) / np.linalg.norm(head - start)
-        fig.text(*((head + 0.09 * fig.dpi * direction) / (width, height)), name, color=INK, fontsize=9, ha="center", va="center")
-
-
-def panel(coordinates, labels, K, delta=None, elev=18, azim=-62, *, colors=None, cycle=True, frame=False, size=4, figsize=(3.2, 2.4)):
+def panel(coordinates, labels, K, delta=None, elev=18, azim=-62, *, colors=None, size=4, figsize=(3.2, 2.4)):
     """3D scatter, last axis vertical, one scale on the three axes (the box is cut to the data).
 
     ``delta`` is the value of p - q written above the cloud; nothing is written if it is None. The points
-    are colored by community unless ``colors`` is given, and ``cycle`` draws a line through the community
-    means (set ``cycle=False`` and ``colors`` for data without communities). With ``frame``, a grid with a line
-    per unit of the embedding is drawn behind the cloud, with the axes x, y and omega (one unit and a half long),
-    instead of the arrow omega alone.
+    are colored by community unless ``colors`` is given (for data without communities, pass ``colors``).
+    The arrow omega beside the cloud is the vertical axis of the view, the direction of the drift.
     Returns the figure and the box (inches) that crops it to its content.
     """
     fig = plt.figure(figsize=figsize)
@@ -105,34 +64,25 @@ def panel(coordinates, labels, K, delta=None, elev=18, azim=-62, *, colors=None,
     half_z = max(0.2 * half, 1.2 * np.abs(coordinates[:, 2]).max())
     if colors is None:
         colors = community_colors(labels, K)
-    ax.computed_zorder = False  # the grid is drawn first, whatever its depth
-    ax.scatter(*coordinates.T, c=colors, s=size, linewidths=0, depthshade=False, zorder=2)
-    if cycle:
-        # Cycle of the community means, to show the plane the communities lie in
-        means = np.stack([coordinates[labels == k].mean(0) for k in range(K)])
-        ax.plot(*np.vstack([means, means[:1]]).T, color=MUTED, linewidth=0.5, alpha=0.7)
+    ax.scatter(*coordinates.T, c=colors, s=size, linewidths=0, depthshade=False)
     ax.set_xlim(-half, half)
     ax.set_ylim(-half, half)
     ax.set_zlim(-half_z, half_z)
     ax.set_box_aspect((half, half, half_z), zoom=1.1)  # same data-to-box scale on the three axes
     ax.view_init(elev=elev, azim=azim)
     ax.set_axis_off()
-    if frame:
-        draw_grid(ax, half, half_z)
-        draw_axes(fig, ax, half, half_z)
 
     left, right, top, bottom = content_extent(fig)
     width, height = fig.get_size_inches() * fig.dpi
-    if not frame:
-        # Direction of the drift omega, beside the cloud: the vertical axis of the view (length exaggerated)
-        x = (left - 0.12 * fig.dpi) / width
-        middle = 1 - 0.5 * (top + bottom) / height
-        length = 0.5 * fig.dpi / height
-        fig.add_artist(FancyArrowPatch(
-            (x, middle - length / 2), (x, middle + length / 2), transform=fig.transFigure,
-            arrowstyle="-|>", mutation_scale=10, color=INK, linewidth=1.2, shrinkA=0, shrinkB=0,
-        ))
-        fig.text(x, middle + length / 2 + 0.02, r"$\omega$", color=INK, fontsize=10, ha="center", va="bottom")
+    # Direction of the drift omega, beside the cloud: the vertical axis of the view (length exaggerated)
+    x = (left - 0.12 * fig.dpi) / width
+    middle = 1 - 0.5 * (top + bottom) / height
+    length = 0.5 * fig.dpi / height
+    fig.add_artist(FancyArrowPatch(
+        (x, middle - length / 2), (x, middle + length / 2), transform=fig.transFigure,
+        arrowstyle="-|>", mutation_scale=10, color=INK, linewidth=1.2, shrinkA=0, shrinkB=0,
+    ))
+    fig.text(x, middle + length / 2 + 0.02, r"$\omega$", color=INK, fontsize=10, ha="center", va="bottom")
     if delta is not None:
         fig.text(0.5 * (left + right) / width, 1 - (top - 0.08 * fig.dpi) / height, rf"$p - q = {delta:g}$",
                  color=INK, fontsize=9, ha="center", va="bottom")
@@ -171,7 +121,7 @@ def main():
             flush=True,
         )
         path = f"{args.out}_pq{delta:g}.{args.format}"
-        fig, crop = panel(coordinates, labels, args.K, delta, cycle=False, frame=True)
+        fig, crop = panel(coordinates, labels, args.K, delta)
         fig.savefig(path, bbox_inches=crop, dpi=300)
         print(f"Saved {path}")
 

@@ -51,7 +51,7 @@ def main():
         colors = TWO_TONE(Normalize(values.min(), values.max())(values))
         mds = next(row for row in rows if row["method"] == "finsler_mds")
         print(f"{dataset}: spread of the heights {mds['height_std']:.2f}, in the plane {mds['plane_std']:.2f}", flush=True)
-        fig, _ = panel(coordinates, None, 0, elev=elev, colors=colors, cycle=False, size=3, figsize=figsize)
+        fig, _ = panel(coordinates, None, 0, elev=elev, colors=colors, size=3, figsize=figsize)
         save(fig, f"{args.out}_{dataset}.{args.format}")
 
 

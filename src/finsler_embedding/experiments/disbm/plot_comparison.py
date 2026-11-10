@@ -13,7 +13,7 @@ Three separate figures, to be placed side by side in a document:
 The sizes are those of a 5.5 in text column (ICLR): the figures are placed at scale one, 1.4 in, 2.0 in and
 2.05 in wide. The two embeddings are drawn at the value of p - q marked in the cosine figure. The coordinates are not
 rescaled; the arrows of the proposed figure are the drifts at their own length, in the units of the
-coordinates, while the triad x, y, omega of the Finsler MDS figure only shows directions.
+coordinates, while the arrow omega of the Finsler MDS figure only shows a direction.
 
     python -m finsler_embedding.experiments.disbm.plot_comparison [--p-minus-q 0.8] [--out disbm_comparison]
 """
@@ -85,13 +85,12 @@ def mds_figure(adjacency, labels, K, alpha, seed):
 
     The vertical axis is the drift axis, and the three axes share one scale: nothing is rescaled in the
     embedding. The fitted metric is the canonical Randers metric |v| + alpha v_last, with a constant drift
-    omega along the vertical axis, pointing up (going up costs more than going down). The triad x, y, omega
-    beside the cloud is drawn with the projection of the view and only shows the directions of the axes, its
-    length is not to scale.
+    omega along the vertical axis, pointing up (going up costs more than going down). The arrow omega
+    beside the cloud only shows the direction of the drift, its length is not to scale.
     """
     coordinates = finsler_mds_embedding(adjacency, 2, alpha, seed=seed).coordinates.numpy()
     coordinates = coordinates - coordinates.mean(0)
-    fig, _ = panel(coordinates, labels, K, cycle=False, frame=True)
+    fig, _ = panel(coordinates, labels, K)
     means = np.stack([coordinates[labels == k].mean(0) for k in range(K)])
     return fig, {"ring radius": np.linalg.norm(means[:, :2], axis=1).mean(), "alpha": alpha,
                  "spread of the heights": coordinates[:, 2].std(), "spread in the plane": coordinates[:, :2].std()}
