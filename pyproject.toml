@@ -9,6 +9,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "fingeo-supplement",
     "geodesic-toolbox",
     "ipykernel>=7.3.0",
     "matplotlib>=3.11.1",
@@ -19,6 +20,7 @@ dependencies = [
     "pytest>=9.2.0",
     "seaborn>=0.13.2",
     "torchvision>=0.29.0",
+    "umap-learn>=0.6.0",
 ]
 
 [project.scripts]
@@ -30,3 +32,4 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 geodesic-toolbox = { git = "https://github.com/Theaublanchard/geodesic_toolbox", rev = "777867c433529ca2595f289f0d5312336170f6c4" }
+fingeo-supplement = { path = "/home/tblanchard/phd/finsler_lineage_geodesics", editable = true }
