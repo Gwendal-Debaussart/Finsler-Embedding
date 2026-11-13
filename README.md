@@ -149,6 +149,38 @@ result = from_points(
 jacobian = result.jacobian
 ```
 
+For a custom embedding callable, `embedding_input` selects whether the callable
+receives the normalized symmetric kernel or the point-cloud coordinates. For example, to run UMAP directly on the input points:
+
+```python
+import torch
+from umap import UMAP
+from finsler_embedding import from_points
+
+
+def umap_on_points(points, *, n_components, **params):
+    coordinates = UMAP(n_components=n_components, **params).fit_transform(
+        points.detach().cpu().numpy()
+    )
+    return torch.as_tensor(
+        coordinates, dtype=points.dtype, device=points.device
+    )
+
+result = from_points(
+    points,
+    distances=directed_distances,
+    bandwidth=0.25,
+    embedding=umap_on_points,
+    embedding_input="points",
+    embedding_params={"n_neighbors": 10},
+)
+```
+
+`embedding_input="points"` requires `from_points`; `from_distances` and
+`from_graph` do not have point-cloud coordinates. The callable must return a
+`torch.Tensor` with shape `(N, n_components)`. The built-in `"spectral"` and
+`"isomap"` embeddings retain their existing input behavior.
+
 For a directed graph, pass a matrix of edge lengths. A zero entry denotes a
 missing edge:
 

@@ -1,11 +1,14 @@
 """Embedding selection for the Finsler construction pipeline."""
 
 from collections.abc import Callable
+from typing import Literal
 
 import torch
 from sklearn.manifold import Isomap
 
 from .operators import leading_eigenvectors
+
+EmbeddingInput = Literal["kernel", "points"]
 
 
 def _validate_components(n: int, n_components: int) -> None:
@@ -82,6 +85,7 @@ def select_embedding(
     symmetric_kernel: torch.Tensor,
     points: torch.Tensor | None,
     n_components: int,
+    embedding_input: EmbeddingInput = "kernel",
     embedding_params: dict | None = None,
 ) -> torch.Tensor:
     """Select and compute an embedding using a named method or callable.
@@ -90,13 +94,19 @@ def select_embedding(
     ----------
     embedding : str or callable
         ``"spectral"``, ``"isomap"``, or a callable returning coordinates.
-        If callable its interface must accept a symmetric kernel and ``n_components`` as keyword arguments.
+        A callable receives the selected input and must accept ``n_components``
+        as a keyword argument.
     symmetric_kernel : torch.Tensor (N, N)
-        Symmetric kernel used by spectral and custom embeddings.
+        Symmetric kernel used by spectral embeddings and custom embeddings
+        when ``embedding_input="kernel"``.
     points : torch.Tensor or None (N, D)
-        Point-cloud coordinates required by Isomap.
+        Point-cloud coordinates used by Isomap and custom embeddings when
+        ``embedding_input="points"``.
     n_components : int
         Number of embedding coordinates.
+    embedding_input : {"kernel", "points"}, default="kernel"
+        Input passed to a custom callable. Named embeddings retain their
+        existing input behavior.
     embedding_params : dict or None, optional
         Additional keyword arguments passed to the selected method.
 
@@ -105,10 +115,24 @@ def select_embedding(
     torch.Tensor (N, n_components)
         Validated embedding coordinates.
     """
+    if embedding_input not in ("kernel", "points"):
+        raise ValueError("embedding_input must be 'kernel' or 'points'")
     params = embedding_params or {}
     if callable(embedding):
-        coordinates = embedding(symmetric_kernel, n_components=n_components, **params)
+        if embedding_input == "points":
+            if points is None:
+                raise ValueError(
+                    "embedding_input='points' requires point-cloud coordinates"
+                )
+            embedding_data = points
+        else:
+            embedding_data = symmetric_kernel
+        coordinates = embedding(embedding_data, n_components=n_components, **params)
     elif embedding == "spectral":
+        if embedding_input == "points":
+            raise ValueError(
+                "embedding_input='points' is only supported for callable embeddings"
+            )
         coordinates = spectral_embedding(symmetric_kernel, n_components)
     elif embedding == "isomap":
         if points is None:

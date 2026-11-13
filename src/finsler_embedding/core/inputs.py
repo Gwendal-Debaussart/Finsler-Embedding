@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import torch
 
-from .embeddings import select_embedding
+from .embeddings import EmbeddingInput, select_embedding
 from .jacobians import estimate_jacobian
 from .kernels import evaluate_kernel, validate_bandwidth, validate_kernel
 from .operators import get_Q_inv_theta, get_W_thetas
@@ -49,6 +49,7 @@ def _run(
     theta: float,
     n_components: int,
     embedding: str | Callable[..., torch.Tensor],
+    embedding_input: EmbeddingInput,
     jacobian: None | str | Callable[..., torch.Tensor],
     jacobian_params: dict | None,
     embedding_params: dict | None,
@@ -74,6 +75,9 @@ def _run(
     embedding : str or callable
         Embedding method. Supported names are ``"spectral"`` and
         ``"isomap"``; a callable may also be supplied.
+    embedding_input : {"kernel", "points"}
+        Input passed to a custom callable. Named embeddings retain their
+        existing input behavior.
     jacobian : str, callable, or None
         Optional Jacobian estimator.
     jacobian_params : dict or None
@@ -107,6 +111,7 @@ def _run(
         symmetric_kernel=symmetric_kernel,
         points=points,
         n_components=n_components,
+        embedding_input=embedding_input,
         embedding_params=embedding_params,
     )
     jac = estimate_jacobian(
@@ -126,6 +131,7 @@ def from_distances(
     theta: float = 1.0,
     n_components: int = 2,
     embedding: str | Callable[..., torch.Tensor] = "spectral",
+    embedding_input: EmbeddingInput = "kernel",
     jacobian: None | str | Callable[..., torch.Tensor] = None,
     jacobian_params: dict | None = None,
     embedding_params: dict | None = None,
@@ -148,6 +154,9 @@ def from_distances(
     embedding : str or callable, default="spectral"
         Embedding method. Supported names are ``"spectral"`` and
         ``"isomap"``; a callable may also be supplied.
+    embedding_input : {"kernel", "points"}, default="kernel"
+        Input passed to a custom callable. Selecting ``"points"`` raises a
+        ValueError because this entry point has no point-cloud coordinates.
     jacobian : str, callable, or None, default=None
         Optional Jacobian estimator. Supported names are
         ``"local_least_squares"`` and ``"polynomial"``.
@@ -164,6 +173,7 @@ def from_distances(
     return _run(
         _validate_matrix(distances, "distances"), points=None, bandwidth=bandwidth,
         kernel=kernel, theta=theta, n_components=n_components, embedding=embedding,
+        embedding_input=embedding_input,
         jacobian=jacobian, jacobian_params=jacobian_params,
         embedding_params=embedding_params,
     )
@@ -178,6 +188,7 @@ def from_points(
     theta: float = 1.0,
     n_components: int = 2,
     embedding: str | Callable[..., torch.Tensor] = "spectral",
+    embedding_input: EmbeddingInput = "kernel",
     jacobian: None | str | Callable[..., torch.Tensor] = None,
     jacobian_params: dict | None = None,
     embedding_params: dict | None = None,
@@ -203,6 +214,9 @@ def from_points(
     embedding : str or callable, default="spectral"
         Embedding method. Supported names are ``"spectral"`` and
         ``"isomap"``; a callable may also be supplied.
+    embedding_input : {"kernel", "points"}, default="kernel"
+        Input passed to a custom callable. ``"kernel"`` preserves the
+        existing behavior; ``"points"`` passes the input point cloud.
     jacobian : str, callable, or None, default=None
         Optional Jacobian estimator. Supported names are
         ``"local_least_squares"`` and ``"polynomial"``.
@@ -223,6 +237,7 @@ def from_points(
     return _run(
         _validate_matrix(distances, "distances"), points=points, bandwidth=bandwidth,
         kernel=kernel, theta=theta, n_components=n_components, embedding=embedding,
+        embedding_input=embedding_input,
         jacobian=jacobian, jacobian_params=jacobian_params,
         embedding_params=embedding_params,
     )
@@ -236,6 +251,7 @@ def from_graph(
     theta: float = 1.0,
     n_components: int = 2,
     embedding: str | Callable[..., torch.Tensor] = "spectral",
+    embedding_input: EmbeddingInput = "kernel",
     jacobian: None | str | Callable[..., torch.Tensor] = None,
     jacobian_params: dict | None = None,
     embedding_params: dict | None = None,
@@ -258,6 +274,9 @@ def from_graph(
     embedding : str or callable, default="spectral"
         Embedding method. Supported names are ``"spectral"`` and
         ``"isomap"``; a callable may also be supplied.
+    embedding_input : {"kernel", "points"}, default="kernel"
+        Input passed to a custom callable. Selecting ``"points"`` raises a
+        ValueError because this entry point has no point-cloud coordinates.
     jacobian : str, callable, or None, default=None
         Optional Jacobian estimator. It is usually omitted because graph
         inputs do not provide point coordinates.
@@ -275,6 +294,7 @@ def from_graph(
     return _run(
         adjacency, points=None, bandwidth=bandwidth,
         kernel=kernel, theta=theta, n_components=n_components, embedding=embedding,
+        embedding_input=embedding_input,
         jacobian=jacobian, jacobian_params=jacobian_params,
         embedding_params=embedding_params, edge_mask=adjacency != 0,
     )
