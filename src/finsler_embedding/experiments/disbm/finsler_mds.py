@@ -81,7 +81,7 @@ def finsler_mds_embedding(
     *,
     seed: int | None = None,
     n_init: int = 1,
-    max_iter: int = 300,
+    max_iter: int = 2000,
 ) -> FinslerMDSEmbedding:
     """Embed a directed graph in the canonical Randers space of dimension ``embedding_dim + 1``.
 
@@ -98,8 +98,9 @@ def finsler_mds_embedding(
         Seed of the random initial configuration.
     n_init : int, default=1
         Number of random initializations (the lowest stress is kept).
-    max_iter : int, default=300
-        SMACOF iterations per initialization.
+    max_iter : int, default=2000
+        SMACOF iterations per initialization, all of them run (``eps=0`` turns the early stop off, which stopped
+        well short of the optimum on some data sets with 300 iterations).
     """
     coordinates, stress = smacof(
         hop_distances(adjacency),
@@ -107,6 +108,7 @@ def finsler_mds_embedding(
         n_components=embedding_dim + 1,
         n_init=n_init,
         max_iter=max_iter,
+        eps=0.0,
         random_state=seed,
     )
     return FinslerMDSEmbedding(

@@ -20,6 +20,11 @@ has one more dimension than the manifold, so its constant drift is compared thro
 *tangential* part, that is, projected on the image of ``J``. This is the drift of the Randers metric
 induced on the embedded manifold. The plain cosine, without projection, is also reported.
 
+GlobCurrent (``--datasets globcurrent``, see ``experiments/globcurrent``) is a real velocity field with vorticity,
+turned into directed distances by Zermelo navigation. A fourth row, ``gradient_ceiling``, gives the best cosine that
+a drift which is the gradient of a potential can reach (the drift of Finsler MDS is of that form), and the
+``curl_fraction`` of the edge asymmetries that no potential explains.
+
 The strength of the asymmetry is the quantity ``||c||^2_{g_BL}`` of the unit ball of the metric, which does
 not depend on the embedding. The strength of Finsler MDS is the one of its induced Randers metric on the
 tangent plane, which has the Euclidean norm and the drift ``alpha ||B^T e_last||`` (``B`` is a basis of
@@ -40,8 +45,10 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 
 from finsler_embedding.core.embeddings import isomap_embedding
 from finsler_embedding.core.operators import randers_approximation
+from finsler_embedding.core.randers import reconstruct_randers
 from finsler_embedding.experiments.baselines import perrault_joncas_meila
 from finsler_embedding.experiments.baselines.finsler_mds import smacof
+from finsler_embedding.experiments.globcurrent.curl import curl_diagnostics
 from finsler_embedding.experiments.legacy.evaluation import (
     DATASETS,
     build_graph,
@@ -50,7 +57,9 @@ from finsler_embedding.experiments.legacy.evaluation import (
 )
 
 # Euclidean radius from which the radius graph is built (it is enlarged when the kernel would be truncated)
-DEFAULT_RADIUS = {"swiss_roll": 5.0, "matsumoto": 1.0}
+DEFAULT_RADIUS = {"swiss_roll": 5.0, "matsumoto": 1.0, "globcurrent": 150.0}  # globcurrent: km
+# Datasets with a strength of the asymmetry beta (the Matsumoto metric has none)
+STRENGTH_DATASETS = ("swiss_roll", "globcurrent")
 
 
 def path_distances(edges: torch.Tensor, lengths: torch.Tensor, n: int) -> np.ndarray:
@@ -68,12 +77,21 @@ def path_distances(edges: torch.Tensor, lengths: torch.Tensor, n: int) -> np.nda
     return dijkstra(graph, directed=True)
 
 
-def finsler_mds_points(distances: np.ndarray, alpha: float, seed: int, n_components: int = 3) -> torch.Tensor:
-    """Finsler MDS coordinates (N, n_components), the last axis is the drift axis."""
+def finsler_mds_points(
+    distances: np.ndarray, alpha: float, seed: int, n_components: int = 3, max_iter: int = 2000
+) -> torch.Tensor:
+    """Finsler MDS coordinates (N, n_components), the last axis is the drift axis.
+
+    SMACOF runs the ``max_iter`` iterations (``eps=0`` turns the early stop off). With the default early stop
+    (``eps=1e-3``) and 300 iterations the optimisation stopped well short of the optimum on some data (pancreas cells:
+    stress 26% above the converged one, Swiss roll with a strong drift: cosine 0.95 instead of 0.999), whereas 2000
+    iterations from a random start reach the stress that the authors' Isomap initialisation reaches.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         coordinates, _ = smacof(
-            distances, randers_w_alpha=alpha, n_components=n_components, n_init=1, max_iter=300, random_state=seed
+            distances, randers_w_alpha=alpha, n_components=n_components, n_init=1, max_iter=max_iter, eps=0.0,
+            random_state=seed,
         )
     return torch.as_tensor(coordinates, dtype=torch.float32)
 
@@ -121,8 +139,14 @@ def mds_strength(jacobian: torch.Tensor, alpha: float) -> torch.Tensor:
     return randers_strength(tangential_drift)
 
 
-def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, graph: str = "radius", radius: float | None = None):
-    """One sampled dataset, the three methods. Returns the rows of results, the data and the Finsler MDS points."""
+def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, graph: str = "radius", radius: float | None = None,
+        thetas: tuple[float, ...] = (1.0,), with_mds: bool = True):
+    """One sampled dataset, the three methods. Returns the rows of results, the data and the Finsler MDS points.
+
+    ``thetas`` are the degree-normalization exponents of our method: ``ours`` is theta = 1, and every other value gives
+    a row ``ours_theta<value>`` on the same graph and embedding. ``with_mds=False`` skips Finsler MDS (the slow baseline)
+    and the gradient ceiling, and the returned points are None.
+    """
     torch.manual_seed(seed)
     np.random.seed(seed)
     data = DATASETS[dataset](n, beta)
@@ -147,6 +171,19 @@ def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, grap
         "relerr_c_norm": metrics["relerr_c_norm_all"],
         "admissible": metrics["admissible"],
     }
+    theta_rows = []
+    for theta in thetas:
+        if theta == 1.0:
+            continue
+        variant = reconstruct_randers(W, eps, Y, 2, theta=theta)
+        variant_metrics = evaluate_embedding(variant, Y, J, truth, 2, {})
+        theta_rows.append({
+            "method": f"ours_theta{theta:g}",
+            "cos_V": variant_metrics["cos_V_all"],
+            "cos_V_q10": float(cosine(variant.drift, true_drift, dim=1).quantile(0.1)),
+            "relerr_c_norm": variant_metrics["relerr_c_norm_all"],
+            "admissible": variant_metrics["admissible"],
+        })
 
     # Perrault-Joncas and Meila: vector field of the antisymmetric part, in the coordinates of the same embedding
     field = torch.as_tensor(perrault_joncas_meila.vector_field(W.numpy(), Y.numpy()), dtype=torch.float32)
@@ -166,6 +203,10 @@ def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, grap
         "scale_to_ours_q90": float(scale.quantile(0.9)),
         "defined": float(finite.float().mean()),
     }
+
+    if not with_mds:
+        base = {"dataset": dataset, "N": n, "beta": beta, "seed": seed, "alpha": alpha, "k": k, "graph": graph}
+        return [base | row for row in [ours, *theta_rows, pjm]], data, None
 
     # Finsler MDS: directed path distances, canonical Randers space of dimension 3. It needs a finite distance
     # between every pair, so it gets the k-NN graph (strongly connected) rather than the truncated radius graph
@@ -187,17 +228,30 @@ def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, grap
     }
     if dataset == "matsumoto":  # the drift axis of Finsler MDS against the height map of the surface
         mds["height_corr"] = float(np.corrcoef(points[:, -1].numpy(), data["X_graph"][:, 2].numpy())[0, 1])
+    rows = [ours, *theta_rows, pjm, mds]
+    if dataset == "globcurrent":
+        # The drift of Finsler MDS is the gradient of a potential (the height of the embedded surface), and the
+        # current has vorticity: the best drift of that form is a ceiling for it, independent of its optimiser
+        curl = curl_diagnostics(data["X_chart"].detach(), data["P"], edges, lengths, truth["c"])
+        rows.append({
+            "method": "gradient_ceiling", "cos_V": curl["gradient_cosine"], "cos_V_q10": curl["gradient_cosine_q10"],
+            "curl_fraction": curl["curl_fraction"],
+        })
     base = {"dataset": dataset, "N": n, "beta": beta, "seed": seed, "alpha": alpha, "k": k, "graph": graph}
-    return [base | row for row in (ours, pjm, mds)], data, points
+    return [base | row for row in rows], data, points
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--datasets", nargs="+", default=["swiss_roll", "matsumoto"], choices=["swiss_roll", "matsumoto"])
-    parser.add_argument("--betas", type=float, nargs="+", default=[0.5, 0.9], help="Swiss roll drift strengths (Matsumoto has none).")
+    parser.add_argument("--datasets", nargs="+", default=["swiss_roll", "matsumoto"], choices=list(DEFAULT_RADIUS))
+    parser.add_argument("--betas", type=float, nargs="+", default=[0.5, 0.9],
+                        help="Drift strengths of the Swiss roll and GlobCurrent (Matsumoto has none).")
     parser.add_argument("--n", type=int, default=2000)
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--alpha", type=float, default=0.5, help="Finsler MDS: strength of the canonical drift.")
+    parser.add_argument("--thetas", type=float, nargs="+", default=[1.0],
+                        help="Degree-normalization exponents of our method (theta = 1 is the row ``ours``).")
+    parser.add_argument("--no-mds", action="store_true", help="Skip Finsler MDS and the gradient ceiling (fast).")
     parser.add_argument("--graph", choices=["radius", "knn"], default="radius")
     parser.add_argument("--radius", type=float, default=None, help="Radius graph: Euclidean radius (default by dataset).")
     parser.add_argument("--k", type=int, default=10, help="Neighbors of the kNN graph.")
@@ -206,9 +260,12 @@ def main():
 
     rows = []
     for dataset in args.datasets:
-        for beta in args.betas if dataset == "swiss_roll" else [None]:  # the Matsumoto metric has no strength parameter
+        for beta in args.betas if dataset in STRENGTH_DATASETS else [None]:  # the Matsumoto metric has no strength parameter
             for seed in range(args.seeds):
-                new_rows, _, _ = run(dataset, args.n, 0.5 if beta is None else beta, seed, args.alpha, args.k, args.graph, args.radius)
+                new_rows, _, _ = run(
+                    dataset, args.n, 0.5 if beta is None else beta, seed, args.alpha, args.k, args.graph, args.radius,
+                    tuple(args.thetas), not args.no_mds,
+                )
                 for row in new_rows:
                     row["beta"] = beta
                 rows += new_rows
@@ -225,6 +282,7 @@ def main():
     metrics = [
         "cos_V", "cos_V_q10", "cos_V_direct", "relerr_c_norm", "cos_with_ours", "scale_to_ours_q10",
         "scale_to_ours_median", "scale_to_ours_q90", "defined", "admissible", "height_corr", "height_std", "plane_std",
+        "curl_fraction",
     ]
     print(df.groupby(["dataset", "beta", "method"])[[m for m in metrics if m in df]].median().round(3).to_string())
 

@@ -44,6 +44,18 @@ def spectral_coordinates(kernel: np.ndarray, n_components: int) -> np.ndarray:
 def vector_field(kernel: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
     """Vector field ``R`` (N, l) in the coordinates of an embedding, ``R = (H_aa - H_ss) Y / 2`` (step 13).
 
+    Two differences with the printed algorithm (arXiv:1406.0013, Algorithm 1), both on purpose:
+
+    * Sign. Step 13 reads ``(Phi Lambda - H_aa Phi) / 2 = (H_ss - H_aa) Phi / 2``, the opposite of the formula here.
+      The paper itself is not consistent on the sign of ``r . grad(phi)`` (its eq. (9) has ``+``, its eq. (12)
+      ``-2``). The sign used here is the one of the kernel convention of its eq. (2), where the kernel is larger
+      towards the drift, so that ``R`` points along the drift (cosine +0.99 with the truth in the experiments).
+    * Scale. Like the printed step 13, ``R`` is not divided by the bandwidth. The identity of the paper,
+      ``(H_aa - H_ss) psi_k = -2 r_k`` (its eq. (22)), is for the limit operators ``(T - I) / epsilon``. With the
+      Gaussian kernel ``exp(-(d / h)^2)`` of this repository ``epsilon = h^2``, but for a kernel built from a Randers
+      distance the norm of ``R`` is proportional to ``h``, not to ``epsilon`` (see ``pjm_magnitude.ipynb``), so the
+      scale of ``R`` depends on the bandwidth and on the units of the embedding.
+
     Parameters
     ----------
     kernel : (N, N) directed affinity matrix ``W``. The rows of the result are NaN where the field is undefined

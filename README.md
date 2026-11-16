@@ -97,11 +97,44 @@ uv run python -m finsler_embedding.experiments.disbm.plot_direction \
   --out results/disbm/direction
 ```
 
+### GlobCurrent surface currents
+
+The GlobCurrent comparison uses a real ocean-current field with curl and measures the drift of ours, Finsler MDS and
+Perrault-Joncas & Meila against the true drift. The day of data (about 55 kB) is downloaded on first use:
+
+```bash
+uv run python -m finsler_embedding.experiments.finsler_mds_manifolds \
+  --datasets globcurrent --betas 0.5 0.9 --seeds 3 --n 2000 \
+  --out results/globcurrent/alpha0.5
+```
+
+Pass `--alpha 0.9` for the other value of the Finsler MDS parameter and `--thetas 1 0.5 0` for the three values of the
+normalization exponent of our method (rows `ours`, `ours_theta0.5` and `ours_theta0`). Finsler MDS runs 2000 SMACOF
+iterations from a random start, without early stop (`max_iter` of `finsler_mds_points`).
+
+The model, the diagnostics and the figure command are in
+[`experiments/globcurrent/README.md`](src/finsler_embedding/experiments/globcurrent/README.md).
+
+### Cell differentiation with RNA velocity
+
+The RNA velocity of single cells (scVelo pancreas and dentate gyrus) is turned into directed distances by the same
+Zermelo construction. The experiment is a notebook, [`velocity_cells.ipynb`](src/finsler_embedding/experiments/lineage_cells/velocity_cells.ipynb),
+which also explains how to add another dataset. It needs `anndata` and AnnData files that `preprocess_with_scvelo`
+produces (with `scvelo` and `scanpy`), read from the folder in `CELL_DATA_DIR` (default `data/cells`):
+
+```bash
+export CELL_DATA_DIR=path/to/folder/with/pancreas_processed.h5ad
+```
+
 The notebooks in the dataset directories provide interactive visualizations:
 
 - [`swissroll_dataset.ipynb`](src/finsler_embedding/experiments/swiss_roll/swissroll_dataset.ipynb)
 - [`matsumoto_dataset.ipynb`](src/finsler_embedding/experiments/matsumoto/matsumoto_dataset.ipynb)
 - [`disbm_dataset.ipynb`](src/finsler_embedding/experiments/disbm/disbm_dataset.ipynb)
+- [`globcurrent.ipynb`](src/finsler_embedding/experiments/globcurrent/globcurrent.ipynb)
+- [`velocity_cells.ipynb`](src/finsler_embedding/experiments/lineage_cells/velocity_cells.ipynb)
+- [`pjm_magnitude.ipynb`](src/finsler_embedding/experiments/baselines/pjm_magnitude.ipynb): what Perrault-Joncas & Meila
+  says about the magnitude of the drift (relative magnitude, calibration and its scale law, intrinsic strength)
 
 ## Using the method
 
