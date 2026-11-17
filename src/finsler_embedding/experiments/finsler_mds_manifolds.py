@@ -2,16 +2,18 @@
 
 The methods are given the directed weighted graphs whose edge lengths are the Finsler distances between
 neighbors (as in ``finsler_embedding.evaluate``). Ours and Perrault-Joncas & Meila use the radius graph of the
-quantitative Swiss roll evaluation, where the kernel is not truncated unevenly. Finsler MDS needs a finite
-dissimilarity between every pair of samples, and the radius graph is not strongly connected under a strong
-drift, so it uses the directed k-NN graph, which is.
+quantitative Swiss roll evaluation, where the kernel is not truncated unevenly. Finsler MDS is run with the construction
+of its authors (Dages et al., 2025, Appendix D.1.1): both directions of every pair of a symmetric Euclidean k-NN graph,
+each with its directed length, and Dijkstra for the dissimilarity between every pair of samples. That graph is strongly
+connected. ``--mds-graph radius`` gives Finsler MDS the neighbor pairs of the radius graph of ours instead
+(``truncate="pair"`` of ``build_data_radius``), as an ablation.
 
 * Moment-Randers (ours): 2D Isomap embedding of the points, drift estimated from the graph operators.
 * Perrault-Joncas and Meila (2011): vector field from the antisymmetric part of the affinity matrix,
   ``(H_aa - H_ss) Y / 2``, in the coordinates of the same Isomap embedding. It has a direction but no
   calibrated magnitude, and no metric.
 * Finsler MDS (Dages et al., 2025): the dissimilarity between two samples is the length of the
-  shortest directed path in the k-NN graph, embedded in the canonical Randers space of dimension 3
+  shortest directed path in the graph (radius or k-NN, see above), embedded in the canonical Randers space of dimension 3
   (2 + 1) whose metric is ``|v| + alpha v_3``, with a constant drift along the last axis.
 
 Directional accuracy is the signed cosine between the recovered drift and the true one, ``C J c``,
@@ -49,6 +51,7 @@ from finsler_embedding.core.randers import reconstruct_randers
 from finsler_embedding.experiments.baselines import perrault_joncas_meila
 from finsler_embedding.experiments.baselines.finsler_mds import smacof
 from finsler_embedding.experiments.globcurrent.curl import curl_diagnostics
+from finsler_embedding.experiments.graph import build_data_radius
 from finsler_embedding.experiments.legacy.evaluation import (
     DATASETS,
     build_graph,
@@ -140,12 +143,14 @@ def mds_strength(jacobian: torch.Tensor, alpha: float) -> torch.Tensor:
 
 
 def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, graph: str = "radius", radius: float | None = None,
-        thetas: tuple[float, ...] = (1.0,), with_mds: bool = True):
+        thetas: tuple[float, ...] = (1.0,), with_mds: bool = True, mds_graph: str = "knn"):
     """One sampled dataset, the three methods. Returns the rows of results, the data and the Finsler MDS points.
 
     ``thetas`` are the degree-normalization exponents of our method: ``ours`` is theta = 1, and every other value gives
     a row ``ours_theta<value>`` on the same graph and embedding. ``with_mds=False`` skips Finsler MDS (the slow baseline)
-    and the gradient ceiling, and the returned points are None.
+    and the gradient ceiling, and the returned points are None. ``mds_graph`` is the graph of the shortest paths of
+    Finsler MDS, the symmetric ``"knn"`` graph of its authors (default) or the neighbor pairs of the ``"radius"`` graph
+    of ours with both directions.
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -209,8 +214,16 @@ def run(dataset: str, n: int, beta: float, seed: int, alpha: float, k: int, grap
         return [base | row for row in [ours, *theta_rows, pjm]], data, None
 
     # Finsler MDS: directed path distances, canonical Randers space of dimension 3. It needs a finite distance
-    # between every pair, so it gets the k-NN graph (strongly connected) rather than the truncated radius graph
-    if graph != "knn":
+    # between every pair, so it gets the symmetric k-NN graph of its authors (strongly connected), not the radius graph
+    # that the kernel of ours truncates, unless mds_graph is "radius"
+    if mds_graph == "radius":
+        if graph != "radius":
+            raise ValueError("mds_graph='radius' needs the radius graph for the other methods too")
+        edges, lengths, _ = build_data_radius(data["X_graph"], radius, data["F"], truncate="pair")
+        lengths = lengths.detach()
+    elif mds_graph != "knn":
+        raise ValueError(f"unknown mds_graph {mds_graph!r}, must be 'knn' or 'radius'")
+    elif graph != "knn":
         _, edges, lengths, _ = build_graph(data["X_graph"], data["F"], "knn", k, 1.0, 0.5, 2, 3.0, None, "cpu")
     distances = path_distances(edges, lengths, n)
     points = finsler_mds_points(distances, alpha, seed)
@@ -253,6 +266,10 @@ def main():
                         help="Degree-normalization exponents of our method (theta = 1 is the row ``ours``).")
     parser.add_argument("--no-mds", action="store_true", help="Skip Finsler MDS and the gradient ceiling (fast).")
     parser.add_argument("--graph", choices=["radius", "knn"], default="radius")
+    parser.add_argument("--mds-graph", choices=["knn", "radius"], default="knn",
+                        help="Graph of the shortest paths of Finsler MDS: the symmetric k-NN graph of its authors (default), "
+                             "or the neighbor pairs of the radius graph of ours with both directions (ablation, needs "
+                             "--graph radius).")
     parser.add_argument("--radius", type=float, default=None, help="Radius graph: Euclidean radius (default by dataset).")
     parser.add_argument("--k", type=int, default=10, help="Neighbors of the kNN graph.")
     parser.add_argument("--out", type=Path, default=Path("results/finsler_mds"))
@@ -264,7 +281,7 @@ def main():
             for seed in range(args.seeds):
                 new_rows, _, _ = run(
                     dataset, args.n, 0.5 if beta is None else beta, seed, args.alpha, args.k, args.graph, args.radius,
-                    tuple(args.thetas), not args.no_mds,
+                    tuple(args.thetas), not args.no_mds, args.mds_graph,
                 )
                 for row in new_rows:
                     row["beta"] = beta

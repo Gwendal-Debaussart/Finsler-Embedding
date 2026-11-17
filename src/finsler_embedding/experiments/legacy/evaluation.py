@@ -59,6 +59,7 @@ from finsler_embedding.eval_operators import (
     tangent_basis,
 )
 from finsler_embedding.omega import CircularSphereOmega, OmegaSwissRoll
+from finsler_embedding.experiments.globcurrent.data import make_globcurrent
 from finsler_embedding.experiments.graph import build_graph as _build_graph
 from finsler_embedding.core.embeddings import isomap_embedding
 from finsler_embedding.core.kernels import randers_constants
@@ -235,7 +236,12 @@ def make_matsumoto(N: int, beta: float = None):
     return {"X_graph": X_high, "X_chart": X, "P": P, "F": F, "truth": truth, "labels": None}
 
 
-DATASETS = {"sphere": make_sphere, "swiss_roll": make_swiss_roll_data, "matsumoto": make_matsumoto}
+DATASETS = {
+    "sphere": make_sphere,
+    "swiss_roll": make_swiss_roll_data,
+    "matsumoto": make_matsumoto,
+    "globcurrent": make_globcurrent,
+}
 
 
 def run_manifold(args) -> pd.DataFrame:

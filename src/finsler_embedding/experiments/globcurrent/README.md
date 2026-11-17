@@ -27,8 +27,8 @@ current `W(x)`, with `|W| < s`. The travel time is a Randers metric, which gives
 - `g_BL^{-1} = I + 4 w w^T`
 - `beta`: the strongest current of the day over the ship speed, the role of `||b||` in the synthetic metrics
 
-The experiment samples ocean nodes, builds the same radius graph for ours and Perrault-Joncas & Meila (directed kNN
-graph for Finsler MDS), and compares the drift of each method with the true drift mapped by the Jacobian of the
+The experiment samples ocean nodes, builds the same radius graph for ours and Perrault-Joncas & Meila (symmetric kNN
+graph, with both directions of every pair, for Finsler MDS as its authors build it), and compares the drift of each method with the true drift mapped by the Jacobian of the
 embedding. Results report the cosine with the true drift, the relative error on `||c||^2_{g_BL}`, and two diagnostics
 that do not use any embedding:
 

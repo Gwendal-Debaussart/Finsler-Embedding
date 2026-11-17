@@ -97,6 +97,30 @@ uv run python -m finsler_embedding.experiments.disbm.plot_direction \
   --out results/disbm/direction
 ```
 
+### Baselines on the manifolds (Finsler MDS, Perrault-Joncas & Meila)
+
+The comparison of the appendix runs the three methods on the Swiss roll (`--n 2000`, both strengths) and on the
+Matsumoto surface (`--n 3000`), with the three values of `theta` of our method and the two strengths of Finsler MDS:
+
+```bash
+for alpha in 0.5 0.9; do
+  uv run python -m finsler_embedding.experiments.finsler_mds_manifolds \
+    --datasets swiss_roll --n 2000 --seeds 3 --alpha $alpha --thetas 1 0.5 0 \
+    --out results/finsler_mds/swiss_roll_alpha$alpha
+  uv run python -m finsler_embedding.experiments.finsler_mds_manifolds \
+    --datasets matsumoto --n 3000 --seeds 3 --alpha $alpha --thetas 1 0.5 0 \
+    --out results/finsler_mds/matsumoto_alpha$alpha
+done
+```
+
+Ours and PJM use the radius graph. Finsler MDS is run with the construction of its authors (Dages et al., 2025,
+Appendix D.1.1): both directions of every pair of a symmetric 10-NN graph, each with its directed length, then Dijkstra
+for the dissimilarity between every pair of samples, which makes the graph strongly connected. `--mds-graph radius` gives
+it the neighbor pairs of the radius graph of ours instead (`truncate="pair"` of `build_data_radius`), as an ablation: the
+results barely move on the manifolds. Keeping every edge of the Euclidean radius graph (`truncate="none"`) is not an
+option on the Swiss roll, where 38 to 44% of its edges link different turns of the roll and Finsler MDS no longer unfolds
+it (cosine 0.65 to 0.98 instead of 0.998).
+
 ### GlobCurrent surface currents
 
 The GlobCurrent comparison uses a real ocean-current field with curl and measures the drift of ours, Finsler MDS and

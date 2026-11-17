@@ -9,7 +9,8 @@ Three separate figures, to be placed side by side (each 1.8 in wide, a third of 
                            manifolds): the vertical axis is the drift axis, omega points up, the three axes share one
                            scale and nothing is rescaled.
 
-The nodes are coloured by the speed of the current. The embeddings are drawn as the methods return them, up to a
+The nodes are coloured by the speed of the current, on the same scale in the three figures (``palette.SPEED``: pale for
+slow water, pink and orange for the jets). The embeddings are drawn as the methods return them, up to a
 rigid motion (rotation or reflection, no rescaling) that puts the Isomap coordinates in the orientation of the
 map; the same motion is applied to the arrows. The arrows of the two vector panels share one global scale
 (``--arrow-km``: the length in km of an arrow of norm one, in units of the ship speed): lengths are proportional
@@ -33,10 +34,11 @@ from scipy.linalg import orthogonal_procrustes
 from finsler_embedding.core.embeddings import isomap_embedding
 from finsler_embedding.core.operators import randers_approximation
 from finsler_embedding.experiments.disbm.plot_comparison import save
-from finsler_embedding.experiments.disbm.plot_finsler_mds import INK, panel
+from finsler_embedding.experiments.disbm.plot_finsler_mds import panel
 from finsler_embedding.experiments.finsler_mds_manifolds import finsler_mds_points, path_distances
 from finsler_embedding.experiments.legacy.evaluation import build_graph
-from finsler_embedding.experiments.plot_finsler_mds_manifolds import TWO_TONE
+
+from finsler_embedding.experiments.palette import INK, SPEED
 
 from .data import EARTH_RADIUS_KM, make_globcurrent
 
@@ -79,7 +81,7 @@ def main():
     X, P, w = data["X_graph"], data["P"], data["w"]
     n = X.shape[0]
     speed = np.asarray(data["labels"])
-    colors = TWO_TONE(Normalize(0, speed.max())(speed))
+    colors = SPEED(Normalize(0, speed.max())(speed))
     chart = map_coordinates(data["lon"], data["lat"])
     ix = np.rint((np.rad2deg(data["lon"].numpy()) - 14.875) / 0.25).astype(int)  # indices on the 0.25 degree grid
     iy = np.rint((np.rad2deg(data["lat"].numpy()) + 40.125) / 0.25).astype(int)

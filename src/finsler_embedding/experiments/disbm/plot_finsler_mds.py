@@ -15,16 +15,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import hsv_to_rgb
 from matplotlib.patches import FancyArrowPatch
 from matplotlib.transforms import Bbox
 
+from finsler_embedding.experiments.palette import INK, SPEED
 from finsler_embedding.experiments.reproducibility import seed_everything
 
 from .disbm import graph_info
 from .finsler_mds import finsler_mds_embedding
-
-INK = "#0b0b0b"
 
 
 def embed(delta, r, K, N, alpha, embedding_dim, seed):
@@ -38,8 +36,8 @@ def embed(delta, r, K, N, alpha, embedding_dim, seed):
 
 
 def community_colors(labels, K):
-    """One colour per community: cyclic hues (the communities form a cycle), softened to stay readable on white."""
-    return hsv_to_rgb(np.stack([labels / K, np.full(len(labels), 0.6), np.full(len(labels), 0.85)], axis=1))
+    """One colour per community: the shared speed scale along the community index (0 to K - 1)."""
+    return SPEED(np.asarray(labels) / (K - 1))[:, :3]
 
 
 def content_extent(fig):

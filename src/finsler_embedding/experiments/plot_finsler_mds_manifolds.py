@@ -15,14 +15,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.colors import Normalize
 
 from .disbm.plot_comparison import save
 from .disbm.plot_finsler_mds import panel
 from .finsler_mds_manifolds import run
-
-# Thesis palette, as in the figures of the experiments
-TWO_TONE = LinearSegmentedColormap.from_list("two_tone", ["#072AC8", "#9A44C5", "#ff459c", "#F96C39"])
+from .palette import SPEED  # one scale for every figure of the experiments
 
 # Canvas (inches) and elevation of the view of each dataset. The Matsumoto surface is nearly flat in
 # the embedding (its height axis is short), so it is seen from higher up.
@@ -45,10 +43,10 @@ def main():
                          "mathtext.fontset": "stix", "font.size": 9})
     for dataset in args.datasets:
         figsize, elev = VIEWS[dataset]
-        rows, data, points = run(dataset, args.n, args.beta, args.seed, args.alpha, args.k, graph="knn")  # Finsler MDS uses the k-NN graph
+        rows, data, points = run(dataset, args.n, args.beta, args.seed, args.alpha, args.k, graph="knn")  # Finsler MDS uses the k-NN graph of its authors
         coordinates = points.numpy() - points.numpy().mean(0)
         values = np.asarray(data["labels"]) if dataset == "swiss_roll" else data["X_graph"][:, 2].numpy()
-        colors = TWO_TONE(Normalize(values.min(), values.max())(values))
+        colors = SPEED(Normalize(values.min(), values.max())(values))
         mds = next(row for row in rows if row["method"] == "finsler_mds")
         print(f"{dataset}: spread of the heights {mds['height_std']:.2f}, in the plane {mds['plane_std']:.2f}", flush=True)
         fig, _ = panel(coordinates, None, 0, elev=elev, colors=colors, size=3, figsize=figsize)

@@ -375,6 +375,7 @@ def build_data_radius(
     X_graph: torch.Tensor,
     radius: float,
     randers: RandersMetrics,
+    truncate: str = "edge",
 ) -> tuple[torch.Tensor, torch.Tensor, float]:
     """
     Builds a radius graph and computes the distance matrix and epsilon value.
@@ -387,6 +388,14 @@ def build_data_radius(
         The radius to consider for each point.
     randers : RandersMetrics
         The Randers metric to use for distance computation.
+    truncate : str
+        Which edges of the (symmetrized) Euclidean radius graph are kept. ``"edge"`` (default) drops every directed edge
+        whose distance is at least ``3 eps``, where the Gaussian kernel is negligible. ``"pair"`` keeps both directions of
+        a pair of nodes as soon as one of them is below ``3 eps``, so that the graph has the neighbor pairs of the
+        kernel and the length of the two directions. It is strongly connected when the neighbor graph is connected,
+        which Finsler MDS needs (a finite distance between every pair of nodes). ``"none"`` keeps every edge of the
+        Euclidean radius graph, whose radius is enlarged to reach ``3 eps`` in the cheapest direction and which then
+        links distant layers of a manifold.
 
     Returns:
     -------
@@ -408,8 +417,15 @@ def build_data_radius(
     dst_mat[edges[:, 0], edges[:, 1]] = dst.detach()
     eps = dst_mat.kthvalue(10, dim=1).values.median().item()
     if 3 * eps > rho * radius:
-        return build_data_radius(X_graph, 1.05 * 3 * eps / rho, randers)
+        return build_data_radius(X_graph, 1.05 * 3 * eps / rho, randers, truncate)
+    if truncate not in ("edge", "pair", "none"):
+        raise ValueError(f"unknown truncate {truncate!r}, must be 'edge', 'pair' or 'none'")
+    if truncate == "none":
+        return edges, dst, eps
     keep = dst.detach() < 3 * eps
+    if truncate == "pair":
+        keys = edges[:, 0] * N + edges[:, 1]
+        keep = keep | torch.isin(edges[:, 1] * N + edges[:, 0], keys[keep])  # the reverse of a kept edge
     return edges[keep], dst[keep], eps
 
 
