@@ -1,6 +1,6 @@
 """
 The proposed moment-Randers embedding and the Finsler MDS baseline on the same DiSBM samples.
-Three separate figures, to be placed side by side in a document:
+Four separate figures, to be placed in a document:
 
     <out>_proposed.pdf     2D spectral embedding, with the mean drift of every community;
     <out>_finsler_mds.pdf  Finsler MDS: canonical Randers space with one more dimension, the vertical axis
@@ -8,7 +8,10 @@ Three separate figures, to be placed side by side in a document:
                            up, going up costs more than going down;
     <out>_cosine.pdf       signed cosine between the node drifts and the forward direction of the cycle of
                            communities, as a function of p - q: median over the nodes of all seeds,
-                           band = 10-90% range.
+                           band = 10-90% range;
+    <out>_cnorm.pdf        estimated strength ||c||_{g_BL} of the asymmetry, as a function of p - q, same
+                           sweep and same style. The strength of Finsler MDS is the one of its canonical
+                           drift, fixed by alpha, hence constant in p - q.
 
 The sizes are those of a 5.5 in text column (ICLR): the figures are placed at scale one, 1.4 in, 2.0 in and
 2.05 in wide. The two embeddings are drawn at the value of p - q marked in the cosine figure. The coordinates are not
@@ -96,19 +99,21 @@ def mds_figure(adjacency, labels, K, alpha, seed):
                  "spread of the heights": coordinates[:, 2].std(), "spread in the plane": coordinates[:, :2].std()}
 
 
-def cosine_figure(x, stats, delta):
-    """Signed cosine with the forward direction versus p - q, one line per method."""
+def sweep_figure(x, stats, delta, ylabel, ylim, yticks=None, zero_line=False, legend="upper left"):
+    """One quantity versus p - q, one line per method: median over the nodes, band = 10-90% range."""
     fig, ax = plt.subplots(figsize=(2.1, 1.5), layout="constrained")
-    ax.axhline(0, color=MUTED, linewidth=0.8, zorder=1)
+    if zero_line:
+        ax.axhline(0, color=MUTED, linewidth=0.8, zorder=1)
     ax.axvline(delta, color=MUTED, linewidth=0.6, linestyle=(0, (3, 3)), zorder=1)
     for name, color, q in stats:
         ax.fill_between(x, q[:, 0], q[:, 2], color=color, alpha=0.18, linewidth=0)
         ax.plot(x, q[:, 1], color=color, linewidth=1.2, marker="o", markersize=2.8, markeredgecolor="white",
                 markeredgewidth=0.5, solid_capstyle="round", solid_joinstyle="round", label=name, zorder=3)
     ax.set_xlabel(r"$p - q$", color=INK, fontsize=8)
-    ax.set_ylabel("signed cosine", color=INK, fontsize=8)
-    ax.set_ylim(-1.08, 1.08)
-    ax.set_yticks([-1, -0.5, 0, 0.5, 1])
+    ax.set_ylabel(ylabel, color=INK, fontsize=8)
+    ax.set_ylim(*ylim)
+    if yticks is not None:
+        ax.set_yticks(yticks)
     ax.grid(axis="y", color=GRID, linewidth=0.6)
     ax.set_axisbelow(True)
     for side in ("top", "right"):
@@ -116,22 +121,37 @@ def cosine_figure(x, stats, delta):
     for side in ("left", "bottom"):
         ax.spines[side].set_color(MUTED)
     ax.tick_params(colors=MUTED, labelcolor=INK, labelsize=7)
-    # Frameless legend in the empty upper-left corner (text in ink, the line key carries the colour)
-    ax.legend(loc="upper left", frameon=False, fontsize=7, labelcolor=INK, handlelength=1.6, borderaxespad=0.2)
+    # Frameless legend in an empty corner (text in ink, the line key carries the colour)
+    ax.legend(loc=legend, frameon=False, fontsize=7, labelcolor=INK, handlelength=1.6, borderaxespad=0.2)
     return fig
+
+
+def cosine_figure(x, stats, delta):
+    """Signed cosine with the forward direction versus p - q, one line per method."""
+    return sweep_figure(x, stats, delta, "signed cosine", (-1.08, 1.08), yticks=[-1, -0.5, 0, 0.5, 1], zero_line=True)
+
+
+def cnorm_figure(x, stats, delta):
+    """Estimated strength ||c||_{g_BL} of the asymmetry versus p - q, one line per method.
+
+    The strength of Finsler MDS is the one of the canonical drift |v| + alpha v_last (``canonical_c_norm``),
+    so its line is flat. The legend sits in the empty band above the curves.
+    """
+    top = 1.4 * max(q[:, 2].max() for _, _, q in stats)
+    return sweep_figure(x, stats, delta, r"$\|\hat{c}\|_{\hat{g}_{BL}}$", (0, top), legend="upper center")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--p-minus-q", type=float, default=0.8, help="Asymmetry at which the embeddings are drawn.")
-    parser.add_argument("--seeds", type=int, default=5, help="Graph samples per value of p - q in the cosine figure.")
+    parser.add_argument("--seeds", type=int, default=5, help="Graph samples per value of p - q in the two curves.")
     parser.add_argument("--N", type=int, default=1000)
     parser.add_argument("--K", type=int, default=15)
     parser.add_argument("--r", type=float, default=0.1)
     parser.add_argument("--alpha", type=float, default=0.5, help="Finsler MDS: strength of the canonical drift.")
     parser.add_argument("--seed", type=int, default=0, help="Seed of the sample drawn in the two embeddings.")
     parser.add_argument("--format", default="pdf", help="Figure format (pdf, png, ...).")
-    parser.add_argument("--out", default="disbm_comparison", help="Prefix: writes <out>_proposed, _finsler_mds, _cosine.")
+    parser.add_argument("--out", default="disbm_comparison", help="Prefix: writes <out>_proposed, _finsler_mds, _cosine, _cnorm.")
     args = parser.parse_args()
     K = args.K
 
@@ -141,18 +161,20 @@ def main():
     _, _, labels, adjacency = graph_info(p=p, q=1 - p - args.r, r=args.r, K=K, N=args.N)
     labels = labels.numpy()
 
-    # The cosine: sweep of p - q, same graphs for both methods
+    # The cosine and the strength: one sweep of p - q, same graphs for both methods
     # Same grid as plot_direction: regular, refined near p = q
     x = np.unique(np.round(np.concatenate([np.arange(-0.8, 0.81, 0.1), [-0.05, -0.02, 0.02, 0.05]]), 2)) + 0.0
     model = DiSBMConfig(n=args.N, communities=K, r=args.r)
-    stats = []
+    cosine_stats, cnorm_stats = [], []
     for name, color, method in (("Ours", PROPOSED, "spectral"), ("Finsler MDS", MDS, "finsler_mds")):
-        print(f"cosine sweep: {name}", flush=True)
+        print(f"sweep: {name}", flush=True)
         config = EmbeddingConfig(method=method, mds_alpha=args.alpha)
-        cosine = run_sweep(x, model, config, args.seeds)["cos"]
-        for delta, quantiles in zip(x, cosine):
-            print(f"  p - q = {delta:+.2f}: median cos {quantiles[1]:+.3f} (10-90%: {quantiles[0]:+.3f}, {quantiles[2]:+.3f})", flush=True)
-        stats.append((name, color, cosine))
+        sweep = run_sweep(x, model, config, args.seeds)
+        for delta, cosine, c_norm in zip(x, sweep["cos"], sweep["c_norm"]):
+            print(f"  p - q = {delta:+.2f}: median cos {cosine[1]:+.3f} (10-90%: {cosine[0]:+.3f}, {cosine[2]:+.3f})"
+                  f", median ||c|| {c_norm[1]:.3f} (10-90%: {c_norm[0]:.3f}, {c_norm[2]:.3f})", flush=True)
+        cosine_stats.append((name, color, sweep["cos"]))
+        cnorm_stats.append((name, color, sweep["c_norm"]))
 
     plt.rcParams.update({"font.family": "serif", "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
                          "mathtext.fontset": "stix", "font.size": 9})
@@ -163,7 +185,8 @@ def main():
     for name, (fig, scales) in figures.items():
         print(f"{name}: " + ", ".join(f"{key} {value:.3f}" for key, value in scales.items()), flush=True)  # embedding units, as drawn
         save(fig, f"{args.out}_{name}.{args.format}")
-    save(cosine_figure(x, stats, args.p_minus_q), f"{args.out}_cosine.{args.format}")
+    save(cosine_figure(x, cosine_stats, args.p_minus_q), f"{args.out}_cosine.{args.format}")
+    save(cnorm_figure(x, cnorm_stats, args.p_minus_q), f"{args.out}_cnorm.{args.format}")
 
 
 if __name__ == "__main__":
